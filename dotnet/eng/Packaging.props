@@ -1,0 +1,50 @@
+<Project>
+
+  <!--
+    Shared NuGet metadata. Imported by Directory.Build.props for every project; only the ones that set
+    IsPackable=true actually produce a .nupkg.
+
+    On the package ids: `Remaestro.Plugins.Sdk` ships the assembly `Remaestro.Sdk`, and
+    `Remaestro.Plugins.Protocol` ships `Remaestro.Grpc`. That mismatch is on purpose and it is worth the
+    thirty seconds it takes to read, because an unexplained one reads as a mistake.
+
+      - The ids avoid `Remaestro.Sdk` as a *package* name because `Sdk` already means something specific in
+        MSBuild — `<Project Sdk="...">` — and a package called `Remaestro.Sdk` will be typed into that
+        attribute by somebody, in the one place they are least equipped to work out why it failed.
+      - The assemblies and namespaces are unchanged because renaming them is a separate decision with a much
+        larger blast radius: every driver in the private product repo references `Remaestro.Sdk` by project
+        reference today, and those references become PackageReferences later. Changing the id is free now;
+        changing the namespace would have to be done in both repos at once.
+  -->
+
+  <PropertyGroup>
+    <Authors>Jonathan Dick</Authors>
+    <Company>Jonathan Dick</Company>
+    <Copyright>Copyright (c) 2026 Jonathan Dick</Copyright>
+
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+
+    <PackageProjectUrl>https://github.com/Redth/remaestro-sdk</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Redth/remaestro-sdk</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>remaestro;home-automation;plugin;driver;grpc;av</PackageTags>
+
+    <!-- Symbols, so a stack trace out of somebody's plugin means something. -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  </PropertyGroup>
+
+  <!--
+    Every packable project ships the repo README as its package README. There is one front door and it
+    should be the same one on nuget.org as on GitHub.
+  -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)../../README.md" Pack="true" PackagePath="/" Visible="false" />
+  </ItemGroup>
+
+</Project>

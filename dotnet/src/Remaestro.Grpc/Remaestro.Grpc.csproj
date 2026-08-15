@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+
+    <!-- See eng/Packaging.props for why the package id and the assembly name differ. -->
+    <IsPackable>true</IsPackable>
+    <PackageId>Remaestro.Plugins.Protocol</PackageId>
+    <Description>
+      The reMaestro driver wire contract: driver.proto, plus the generated gRPC client and server for .NET.
+      A plugin is an out-of-process gRPC server speaking this contract, in any language. This package is the
+      .NET generation of it — the proto itself ships inside as content, so a Go, Python or Node author can
+      take the exact file the hub was built from rather than a copy off a docs page.
+    </Description>
+  </PropertyGroup>
+
+  <!-- Grpc.AspNetCore pulls the server bits + Grpc.Tools + Google.Protobuf; the framework ref lets
+       this class library host the generated server base. Grpc.Net.Client provides the client side. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Grpc.AspNetCore" Version="2.71.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.71.0" />
+  </ItemGroup>
+
+  <!--
+    The proto lives at the repository root, not under dotnet/, and that placement is load-bearing rather
+    than tidy. Every future SDK — Node, Python, Go — generates from this same file, and a contract parked
+    inside one language's directory tells every other language it is a guest.
+
+    ProtoRoot pins the import root at proto/, so `driver.proto` is the import path here and in every other
+    generator, rather than something with `../../..` in it.
+  -->
+  <ItemGroup>
+    <Protobuf Include="../../../proto/driver.proto" ProtoRoot="../../../proto" GrpcServices="Both" />
+  </ItemGroup>
+
+  <!--
+    …and it ships in the package as content under proto/, so `dotnet add package Remaestro.Plugins.Protocol`
+    is also a way to get the file itself.
+  -->
+  <ItemGroup>
+    <None Include="../../../proto/driver.proto" Pack="true" PackagePath="proto/" Visible="false" />
+  </ItemGroup>
+
+</Project>

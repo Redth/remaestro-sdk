@@ -1,0 +1,537 @@
+syntax = "proto3";
+
+option csharp_namespace = "Remaestro.Grpc";
+package maestro;
+
+// A driver runs out-of-process and hosts this service; the hub is the gRPC client.
+// One driver process can host many device instances (all events multiplex over one stream).
+service Driver {
+  rpc Describe (DescribeRequest) returns (DriverDescriptor);
+  rpc CreateDevice (CreateDeviceRequest) returns (CreateDeviceResponse);
+  rpc ExecuteCommand (ExecuteCommandRequest) returns (ExecuteCommandResponse);
+  rpc GetState (DeviceRef) returns (DeviceStateMessage);
+  rpc StreamEvents (StreamEventsRequest) returns (stream DeviceEventMessage);
+  rpc DisposeDevice (DeviceRef) returns (DisposeResponse);
+
+  // The inputs/sources a device can switch to, asked at the moment the user picks one. Devices that
+  // know their real list (an AV receiver with renamed sources) answer live; others report unsupported
+  // and the hub falls back to the device type's declared input capabilities.
+  rpc ListInputs (DeviceRef) returns (InputListMessage);
+
+  // The TV guide — a source's channels and their programmes over a time window, for the guide grid. A
+  // driver that aggregates EPG (a tuner's cloud guide, an XMLTV feed, an Xtream account) answers; the
+  // window keeps a multi-day guide from crossing the wire all at once.
+  rpc GetEpg (EpgRequest) returns (EpgMessage);
+
+  // The apps a device can launch — Netflix, YouTube, a TV's own tuner app. A streamer that knows its
+  // installed set (Apple TV, Roku, an LG webOS TV) answers live, artwork and all; a device that can't be
+  // asked reports unsupported and the hub falls back to whatever apps the driver declares statically.
+  rpc ListApps (DeviceRef) returns (AppListMessage);
+
+  // The remote this one unit deserves, asked of the device rather than of the type. A driver knows what
+  // Describe cannot: which sources this receiver actually has and what its owner renamed them to, whether
+  // this Roku is a TV with volume keys or a stick without. Answering is optional and most devices don't —
+  // a lamp has no remote worth drawing — and a driver built before this rpc existed answers UNIMPLEMENTED,
+  // which the hub reads as the same "no" and falls back exactly as it did before.
+  rpc GetRemote (DeviceRef) returns (DeviceRemoteMessage);
+
+  // What sits behind a bridge — the bulbs on a Hue bridge, the entities on a Home Assistant server.
+  // The hub offers to add each as a device of its own, all sharing the bridge's one connection.
+  rpc ListBridgedDevices (DeviceRef) returns (BridgedDeviceListMessage);
+
+  // The values a parameter will accept, asked at the moment someone's choosing one. For lists that can
+  // only be known by asking the device; fixed lists ride along in the field's own options.
+  rpc ListOptions (OptionsRequest) returns (OptionsListMessage);
+
+  // Content navigation (docs/navigation-spec.md). All no-ops on drivers without SupportsNavigation.
+  rpc Browse      (BrowseRequest)      returns (NodeListingMessage);
+  rpc GetNode     (NodeRefMessage)     returns (LibraryNodeMessage);
+  rpc SearchNodes (SearchNodesRequest) returns (NodeListingMessage);
+  rpc InvokeItem  (InvokeItemRequest)  returns (ExecuteCommandResponse);
+
+  // Diagnostics: capture the driver's actual conversation with the device — the wire exchange the hub
+  // otherwise never sees — for when a driver doesn't work on hardware its author can't test against. Off
+  // by default: it's costly and it sees whatever crosses the wire, so the hub turns it on for a device,
+  // the user reproduces the problem, and the hub pulls the buffer. Redaction happens in the driver, at the
+  // source, so a secret never reaches the hub in the first place. Pull, not stream: the buffer is drained
+  // on demand for a bundle and polled for the live view, which needs no long-lived stream to keep alive.
+  rpc SetDiagnostics (SetDiagnosticsRequest) returns (SetDiagnosticsResponse);
+  rpc GetDiagnostics (GetDiagnosticsRequest) returns (DiagnosticsMessage);
+}
+
+message DescribeRequest {}
+
+message DriverDescriptor {
+  string type_id = 1;          // stable id, e.g. "http"
+  string display_name = 2;
+  string description = 3;
+  repeated ConfigField config_schema = 4;   // config needed to create a device instance
+  repeated CommandDescriptor commands = 5;   // commands common to every device of this type
+  repeated EventDescriptor events = 6;       // the events devices of this type emit
+  repeated StateField state_schema = 7;      // the state keys devices of this type keep
+  repeated string discovery_services = 8;    // mDNS service types this device type advertises as
+  bool supports_navigation = 9;              // devices expose a browsable content library (INavigableDevice)
+  repeated RemoteTemplateMessage remote_templates = 10;  // remotes this driver ships for its devices
+  repeated string traits = 11;      // what this type is for (ir.emitter, bridge, display…)
+  bool supports_epg = 12;           // devices provide a TV guide — channels + timed programmes (IEpgSource)
+
+  // Devices of this type may answer GetRemote. A hint, not a promise — an individual device can still say
+  // no. It exists so a page listing thirty devices can tell which cards open a remote without thirty gRPC
+  // round trips on every redraw; the call itself only happens when someone actually taps one.
+  bool supports_device_remotes = 13;
+}
+
+// ---- Driver-supplied remote templates ----
+// A driver can ship the remote its devices deserve. Layout is in design-surface pixels on a
+// width×height canvas; buttons bind to canonical capability ids, so the hub resolves each to that
+// device's real command. Contributed templates join the built-in gallery and are offered when a
+// device of this type is added.
+message RemoteTemplateMessage {
+  string id = 1;               // stable, e.g. "acme.tv.classic"; blank = derived from the driver + name
+  string name = 2;
+  string description = 3;
+  string icon = 4;
+  string category = 5;         // gallery grouping, e.g. "TVs"
+  string brand = 6;
+  int32 width = 7;
+  int32 height = 8;
+  repeated RemoteElementMessage elements = 9;
+}
+
+message RemoteElementMessage {
+  string kind = 1;             // button | label | dpad | rocker
+  string shape = 2;            // rounded | pill | circle
+  double x = 3;
+  double y = 4;
+  double w = 5;
+  double h = 6;
+  string capability = 7;       // canonical command id, e.g. "power.toggle" (button)
+  string label = 8;            // overrides the vocabulary label; also the label element's text
+  string icon = 9;             // overrides the vocabulary icon
+  string fill = 10;            // optional colour override
+  string variant = 11;         // dpad: cross | ring | round | disc
+  string plus = 12;            // rocker: capability for +
+  string minus = 13;           // rocker: capability for −
+
+  // Arguments the capability is sent with — `input.select` + {input: "GAME"} is one source key on a
+  // receiver. Without these a per-device remote could only draw the dozen sources the vocabulary happens
+  // to name discretely, which is not the set any real receiver has.
+  map<string, string> args = 14;
+
+  // Type size in px; 0 leaves the default. Needed wherever a real name is longer than the key it sits on —
+  // "Cable / Satellite" on a source key — because the face CSS is nowrap + overflow:hidden and cuts the
+  // label off mid-word rather than wrapping or shrinking.
+  double font_size = 15;
+}
+
+// The remote a driver draws for one device, or its refusal to.
+message DeviceRemoteMessage {
+  bool supported = 1;          // false = this device has no remote of its own; the hub falls back
+  RemoteTemplateMessage remote = 2;
+}
+
+// ---- Inputs ----
+
+message InputListMessage {
+  bool supported = 1;                        // false = this device doesn't enumerate its inputs
+  repeated InputSourceMessage inputs = 2;
+}
+
+message InputSourceMessage {
+  string id = 1;               // the value the input command takes, e.g. "MPLAY"
+  string label = 2;            // friendly name, e.g. "Media Player"
+  string detail = 3;           // optional extra, e.g. a user-assigned rename
+  bool current = 4;            // the device reports this as the active input
+}
+
+// ---- EPG (TV guide) ----
+
+message EpgRequest {
+  string device_id = 1;
+  int64 from_unix = 2;         // window start, unix seconds
+  int64 to_unix = 3;           // window end, unix seconds
+}
+
+message EpgMessage {
+  bool supported = 1;          // false = this device isn't a guide source
+  repeated EpgChannelMessage channels = 2;
+  repeated EpgProgrammeMessage programmes = 3;
+}
+
+message EpgChannelMessage {
+  string id = 1;               // channel id programmes reference
+  string name = 2;
+  string logo = 3;             // channel artwork URL, optional
+  string number = 4;           // display number, e.g. "3.1", optional
+  string stream_url = 5;       // what to play to watch it, optional — the guide's Watch action uses it
+}
+
+message EpgProgrammeMessage {
+  string channel_id = 1;
+  int64 start_unix = 2;
+  int64 stop_unix = 3;
+  string title = 4;
+  string subtitle = 5;         // episode title, optional
+  string description = 6;
+  string category = 7;         // genre, optional
+  string image = 8;            // programme artwork URL, optional
+  string episode = 9;          // "S3E4" or similar, optional
+  bool is_new = 10;            // first-run rather than a repeat
+}
+
+// ---- Apps ----
+
+message AppListMessage {
+  bool supported = 1;                        // false = this device doesn't enumerate its apps
+  repeated AppMessage apps = 2;
+}
+
+message AppMessage {
+  string id = 1;               // the value the launch command takes — a Roku channel id, an app bundle id
+  string name = 2;             // friendly name, e.g. "Netflix"
+  string icon = 3;             // optional artwork URL for the app's logo
+  string detail = 4;           // optional extra, e.g. a version or category
+  bool current = 5;            // the device reports this app as in the foreground
+  repeated AppParamMessage params = 6;   // what this app can be handed at launch — a stream URL, say. Usually empty.
+}
+
+// A value an app accepts when launched — the answer to "can this one be passed a stream to play?". Sent
+// alongside the app id through the same launch command.
+message AppParamMessage {
+  string key = 1;              // the launch command argument this fills
+  string label = 2;            // what to show the user, e.g. "Stream URL"
+  string kind = 3;             // a UI hint: "url" | "text"
+  bool required = 4;           // whether the app can be launched without it
+}
+
+message OptionsRequest {
+  string device_id = 1;
+  string options_key = 2;      // whatever the parameter declared
+}
+
+message OptionsListMessage {
+  bool supported = 1;          // false = this device doesn't answer for that key
+  repeated FieldOptionMessage options = 2;
+}
+
+message BridgedDeviceListMessage {
+  bool supported = 1;                        // false = this device doesn't front anything
+  repeated BridgedDeviceMessage devices = 2;
+}
+
+message BridgedDeviceMessage {
+  string id = 1;               // the bridge's own id for it, stable across restarts
+  string name = 2;
+  string kind = 3;             // light | switch | media | sensor | scene | speaker | tv
+  string detail = 4;
+  map<string, string> config = 5;   // extra config to stamp on the device created for it
+}
+
+message EventDescriptor {
+  string type = 1;             // e.g. "playback.started"
+  string description = 2;
+  repeated EventField fields = 3;
+  bool has_extra_data = 4;     // event may carry extra raw keys beyond the declared fields
+}
+
+message EventField {
+  string key = 1;
+  string type = 2;             // string | number | bool
+  string description = 3;
+}
+
+message StateField {
+  string key = 1;
+  string type = 2;
+  string description = 3;
+}
+
+message ConfigField {
+  string key = 1;
+  string label = 2;
+  string type = 3;             // string | number | bool | secret | multiline
+  bool required = 4;
+  string default_value = 5;
+  string help = 6;
+
+  // The values this field accepts, when they're known up front.
+  repeated FieldOptionMessage options = 7;
+  // For a list only the device can answer — the hub asks via ListOptions with this key.
+  string options_key = 8;
+  // Range for a number field. Strings so "unset" is distinguishable from zero.
+  string min = 9;
+  string max = 10;
+
+  // A good default most people shouldn't touch — folded away behind "Advanced".
+  bool advanced = 11;
+  // Filled by a flow rather than by hand; never offered as something to type into.
+  bool managed = 12;
+
+  // "Only ask for this when another field is set to one of these": "transport=serial|network".
+  // A driver with several ways to reach the same hardware has fields that only apply to one of them,
+  // and showing all of them at once asks people to know which four of the seven boxes to ignore.
+  string show_when = 13;
+}
+
+message FieldOptionMessage {
+  string value = 1;            // what gets sent
+  string label = 2;            // what the user reads
+  string detail = 3;
+  bool current = 4;            // the device reports it's on this one now
+}
+
+message CommandDescriptor {
+  string id = 1;
+  string label = 2;
+  string description = 3;
+  repeated ConfigField parameters = 4;
+}
+
+message CreateDeviceRequest {
+  string device_id = 1;
+  string name = 2;
+  map<string, string> config = 3;
+}
+
+message CreateDeviceResponse {
+  bool ok = 1;
+  string error = 2;
+  repeated CommandDescriptor commands = 3;   // per-instance commands (may extend the common set)
+  repeated string traits = 4;                // what this device is for, when it differs from its driver's
+  MediaPlaybackInfo playback = 5;            // what it can be handed to play; absent means it never said
+}
+
+// What a device can be given to play, and how.
+//
+// Declared rather than sniffed. The hub used to look for a command parameter named something like "url",
+// which offered a Zidoo reached over RS-232 as somewhere to send a film — a media player that cannot be
+// given one — and generated the activity with no play step and no complaint. Per-device because the same
+// driver fronts both: the network Zidoo takes a URL, the serial one doesn't.
+// An absent message and a present one with an empty command_id are different answers, and the difference
+// is load-bearing: absent is "this driver hasn't declared", which leaves the hub sniffing parameter names,
+// while present-and-empty is "asked and answered: nothing", which the hub believes. A device with a
+// URI-shaped parameter that isn't a media handoff — an Xbox app launcher, a webhook — has no other way out
+// of the sniff.
+message MediaPlaybackInfo {
+  string command_id = 1;      // the command that plays something; empty = nothing can be handed here
+  string url_param = 2;       // which of its parameters carries the thing to play
+  repeated string kinds = 3;  // movie · episode · track · video · photo · channel · stream; empty = any
+}
+
+message ExecuteCommandRequest {
+  string device_id = 1;
+  string command_id = 2;
+  map<string, string> args = 3;              // already token-resolved by the hub
+}
+
+message ExecuteCommandResponse {
+  bool ok = 1;
+  string error = 2;
+  map<string, string> result = 3;
+}
+
+message DeviceRef { string device_id = 1; }
+
+message StreamEventsRequest {}                // stream events for every device on this driver
+
+message DeviceStateMessage {
+  bool online = 1;
+  map<string, string> state = 2;
+
+  // A device whose command list isn't known until it has talked to its hardware — a Hubitat child
+  // learns what it can do from the hub — sends the list here once it changes. Only when it changes:
+  // state is refreshed on every event, and repeating an unchanged list would be pure noise.
+  bool commands_changed = 3;
+  repeated CommandDescriptor commands = 4;
+
+  // And the same for what the device *is*. A bridge's children all share their driver's type id, so
+  // the driver's own traits describe the hub, not the lamp — every child has to say for itself.
+  bool traits_changed = 5;
+  repeated string traits = 6;
+}
+
+message DeviceEventMessage {
+  string device_id = 1;
+  string type = 2;                            // e.g. "playback.started", "request.sent"
+  map<string, string> data = 3;
+  int64 timestamp_unix_ms = 4;
+
+  // Set only on a heartbeat frame — `type` == "driver.heartbeat", `device_id` empty, `data` empty. The
+  // frame is about the *process*, not about any one device it hosts, which is why the device id is blank.
+  //
+  // A message field rather than a handful of scalars, and that is the whole point: proto3 gives a scalar a
+  // default of 0 that no reader can tell from a real reading, and a 0 for a heap nobody measured is the lie
+  // this codebase refuses to draw. A message is either there or it is not. A driver built before this
+  // existed emits no heartbeat frame at all, so the hub holds no sample for it and can say "there was never
+  // a number to take" — which is a different sentence from "we could not read it".
+  DriverRuntimeMessage runtime = 5;
+}
+
+// A driver's own account of its runtime, carried on the StreamEvents stream that is already open.
+//
+// **Deliberately not here: anything /proc already answers.** `#170` reads VmRSS, RssAnon, RssFile, VmSize,
+// VmSwap, VmHWM and the OS thread count out of one `/proc/<pid>/status` per process per tick, hub-side, for
+// any pid. Sending those again would buy nothing and create a second source for the same fact that could
+// disagree with the first. Everything below is a number that only the process itself can know.
+//
+// **Every field has explicit presence.** Unset means "not taken"; it never means zero.
+message DriverRuntimeMessage {
+  // GC.GetTotalMemory(false). Valid from the first instruction — measured, this one does *not* wait for a
+  // collection the way everything under `gc_index` does.
+  optional int64 managed_heap_bytes = 1;
+
+  // GC.GetTotalAllocatedBytes() — allocated over the whole life of the process, monotonic. Sent raw rather
+  // than as a rate on purpose: a rate would bake this frame's interval into the number, and the hub already
+  // knows when two frames arrived. Differencing two frames hub-side gives bytes/sec, and it is the single
+  // most useful number here — it is how you see a driver churning without its heap ever growing.
+  optional int64 total_allocated_bytes = 2;
+
+  // GC.CollectionCount(n), monotonic, same differencing.
+  optional int32 gen0_collections = 3;
+  optional int32 gen1_collections = 4;
+  optional int32 gen2_collections = 5;
+
+  // ---- Everything below comes from GCMemoryInfo, and is UNSET until the first collection ----------------
+  //
+  // Measured on .NET 10, both CoreCLR and Native AOT: before any GC has run, GCMemoryInfo reports
+  // HeapSizeBytes, TotalCommittedBytes and FragmentedBytes as literally 0, and Index as 0 along with them.
+  // `#151` drew "committed — 0 B" from exactly this. `#170` recorded the trap for TotalCommittedBytes;
+  // it is in fact all three, and `gc_index` is what tells "no collection yet" from "a collection that
+  // found nothing". The driver leaves all four unset while gc_index would be 0.
+  //
+  // Also: committed >= live does NOT hold — `#170` saw 31.1 MB live against 21.7 MB committed on a real
+  // page, because the two are not read in the same instant. No copy anywhere may call the gap headroom.
+
+  // Which collection the three below describe. Unset means none has happened, so they are unset too.
+  optional int64 gc_index = 6;
+  optional int64 gc_heap_size_bytes = 7;
+  optional int64 committed_bytes = 8;
+  optional int64 fragmented_bytes = 9;
+
+  // ---- Thread pool -------------------------------------------------------------------------------------
+  // Not the OS thread count — /proc has that, and this is a subset of it. `pending_work_items` is the one
+  // worth the wire: a queue that grows is thread-pool starvation, which is invisible from outside the
+  // process and is the failure mode a driver blocking on a socket actually produces.
+  optional int32 thread_pool_threads = 10;
+  optional int64 thread_pool_pending_items = 11;
+}
+
+message DisposeResponse { bool ok = 1; }
+
+// ---- Navigation ----
+
+message BrowseRequest {
+  string device_id = 1;
+  string node_id = 2;          // empty = library root(s)
+  int32 offset = 3;
+  int32 limit = 4;
+  string sort_by = 5;
+  string filter = 6;
+}
+
+message NodeRefMessage {
+  string device_id = 1;
+  string node_id = 2;
+}
+
+message SearchNodesRequest {
+  string device_id = 1;
+  string query = 2;
+  int32 offset = 3;
+  int32 limit = 4;
+}
+
+message InvokeItemRequest {
+  string device_id = 1;
+  string node_id = 2;
+  string command_id = 3;
+  map<string, string> args = 4;
+}
+
+message NodeListingMessage {
+  LibraryNodeMessage node = 1;             // the browsed node (may be unset at a root)
+  repeated LibraryNodeMessage items = 2;
+  int32 total = 3;
+  string shape = 4;                        // the page's default item shape (poster | wide | square | banner)
+  string size = 5;                         // the page's card size (compact | normal | large)
+}
+
+message LibraryNodeMessage {
+  string id = 1;
+  string parent_id = 2;
+  string kind = 3;
+  string title = 4;
+  string subtitle = 5;
+  string overview = 6;
+  bool is_container = 7;
+  bool is_playable = 8;
+  int32 child_count = 9;
+  bool has_child_count = 10;               // distinguishes 0 from "unknown"
+  map<string, string> metadata = 11;
+  repeated ImageRefMessage images = 12;
+  repeated ItemCommandMessage commands = 13;
+  string shape = 14;                       // this item's shape; blank inherits the page's
+  string size = 15;                        // this item's card size; blank inherits the page's
+  string group = 16;                       // section heading this item belongs under; blank means ungrouped
+}
+
+message ImageRefMessage {
+  string kind = 1;
+  string url = 2;
+  int32 width = 3;
+  int32 height = 4;
+  string blur_hash = 5;
+  string aspect = 6;                       // the shape of this image itself, when known
+}
+
+message ItemCommandMessage {
+  string id = 1;
+  string label = 2;
+  string kind = 3;
+  repeated ConfigField params = 4;
+}
+
+// --- Diagnostics ---------------------------------------------------------------------------------------
+
+message SetDiagnosticsRequest {
+  string device_id = 1;   // empty means every device this driver hosts
+  bool enabled = 2;
+
+  // Capture everything this process ever touches, including devices created after this call and traffic
+  // attributed to an id the hub hasn't heard of yet. `device_id` is ignored when this is set. Without it,
+  // turning capture on for "all devices" only ever reached the ones that already existed — which is the
+  // wrong answer for a driver that is restarting, or a transport sibling created on the next config save.
+  bool everything = 3;
+}
+message SetDiagnosticsResponse { bool ok = 1; }
+
+message GetDiagnosticsRequest {
+  string device_id = 1;   // empty means every device
+  int64 after_seq = 2;    // only records newer than this sequence; 0 for everything still held
+}
+
+message DiagnosticsMessage {
+  bool enabled = 1;                        // whether capture is currently on for the asked device(s)
+  repeated DiagnosticRecord records = 2;
+}
+
+// One moment on the wire, already redacted by the driver. `text` is the human line; `detail` carries the
+// extra a bug report wants (an exception, a response body) without cluttering the summary.
+message DiagnosticRecord {
+  int64 seq = 1;                           // monotonic per driver, so the live view can poll incrementally
+  int64 timestamp_unix_ms = 2;
+  string device_id = 3;
+  string transport = 4;                    // "tcp", "serial", "http", "udp", "ws", "bt", "btle", ...
+  string direction = 5;                    // "tx" | "rx" | "open" | "close" | "error" | "info" | "event"
+  string text = 6;
+  string detail = 7;
+
+  // Where this happened, in whatever terms the transport uses: "10.0.0.5:23", "/dev/ttyUSB0 at 9600 baud",
+  // a URL's origin, a MAC. The hub groups a timeline by it, which is what lets one device's three routes be
+  // told apart at a glance.
+  string endpoint = 8;
+
+  // The bytes exactly as they went past, hex, uppercase, no separators. Text is a lossy rendering of a
+  // binary protocol — and for the gear that is binary, the hex is the only version worth having.
+  string hex = 9;
+}

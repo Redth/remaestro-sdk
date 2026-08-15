@@ -1,0 +1,29 @@
+<Project>
+
+  <!--
+    The SDK versions independently of the hub, and that is a deliberate exception rather than an oversight.
+
+    The private product repo's own Directory.Build.props sets one version for the whole product, with the
+    reasoning written above it: the hub and every driver ship together because that is the number a user
+    reads out to you when something is wrong, and "a matrix of independently versioned parts is unanswerable
+    over the phone."
+
+    That rule is right for a thing you install as a unit and wrong for a thing strangers compile against.
+    A plugin built against SDK 1.2 has to keep working on hub 1.7 — the whole point of a published contract
+    is that the two move apart — so a package stamped with the product's date-based CI version
+    (YYYY.MM.0-<channel>.<run>.g<sha>) would be unusable to anyone outside the build that produced it.
+
+    So: plain semver here, and the *protocol* carries the compatibility statement rather than the package
+    version. Which proto a plugin was built against is the question that matters, and it is answered on the
+    wire, not by a NuGet range.
+
+    Keep it plain. No `+` build metadata — it breaks Docker tags and mangles artifact URLs, which the
+    product repo learned once already.
+  -->
+
+  <PropertyGroup>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionSuffix>preview.1</VersionSuffix>
+  </PropertyGroup>
+
+</Project>

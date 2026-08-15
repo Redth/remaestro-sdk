@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Remaestro.ProxyAgent</RootNamespace>
+  </PropertyGroup>
+
+  <!-- No project references, and that is the point rather than an omission.
+
+       This is the *board side* of the tunnel — the same role firmware/remaestro_proxy plays for an ESP32 —
+       and the two sides of a wire protocol that share a type definition are not two implementations of it,
+       they are one implementation with a compiler enforcing agreement that the wire cannot. The ESP32 is in
+       C++ and could never share anything; a hub-side change that quietly altered the format would be caught
+       for the Pi and not for the board, which is the worst of both.
+
+       So the constants are mirrored, exactly as ProxyPortName.TcpScheme mirrors the SDK's own, and a drift
+       test in tests/Remaestro.ProxyAgent.Tests asserts every one of them still equals the hub's. -->
+
+</Project>

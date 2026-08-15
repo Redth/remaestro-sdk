@@ -1,0 +1,21 @@
+# ─── .NET build output ───────────────────────────────────────────────
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Pp]ublish/
+artifacts/
+*.nupkg
+*.snupkg
+*.user
+*.suo
+*.userprefs
+
+# ─── IDE / editor ────────────────────────────────────────────────────
+.vs/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# ─── Scratch / logs ──────────────────────────────────────────────────
+*.log

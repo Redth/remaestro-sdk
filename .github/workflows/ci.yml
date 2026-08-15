@@ -1,0 +1,55 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Managed IL is architecture-neutral, so a hosted x64 runner packs and tests everything here. The
+    # product's own release pipeline needs arm64 hardware; this does not.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore Remaestro.Sdk.slnx
+
+      - name: Build
+        run: dotnet build Remaestro.Sdk.slnx --configuration Release --no-restore
+
+      # The step's own exit code is the verdict. A test host that dies mid-run can leave a green-looking
+      # log with most of an assembly missing, and `Failed: 0` is true and meaningless when three thousand
+      # tests never ran — so nothing here greps the output for "Passed!".
+      - name: Test
+        run: dotnet test Remaestro.Sdk.slnx --configuration Release --no-build
+
+      # Packing on every build, not only on a release, so a broken package is a failed PR rather than a
+      # discovery on publication day. Nothing is pushed from here.
+      #
+      # The two packable projects by name rather than the solution: packing the solution warns once per
+      # sample and per test project that packaging is disabled, which is true and is not news.
+      - name: Pack
+        run: |
+          dotnet pack dotnet/src/Remaestro.Grpc/Remaestro.Grpc.csproj \
+            --configuration Release --no-build --output ./artifacts
+          dotnet pack dotnet/src/Remaestro.Sdk/Remaestro.Sdk.csproj \
+            --configuration Release --no-build --output ./artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: |
+            ./artifacts/*.nupkg
+            ./artifacts/*.snupkg
+          if-no-files-found: error

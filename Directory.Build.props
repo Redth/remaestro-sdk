@@ -1,0 +1,47 @@
+<Project>
+
+  <!--
+    This sits at the repository root rather than under dotnet/ because samples/ and dotnet/ both need it and
+    MSBuild only walks up to the first Directory.Build.props it finds. The files it imports stay under
+    dotnet/eng/, because a VersionPrefix and a set of NuGet properties are .NET's business and the next
+    language's build config should live next to that language, not here.
+  -->
+  <Import Project="dotnet/eng/SdkVersion.props" />
+  <Import Project="dotnet/eng/Packaging.props" />
+
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <!--
+      Nothing packs unless it says so. Samples and tests are read and run, not consumed.
+    -->
+    <IsPackable>false</IsPackable>
+
+    <!--
+      XML docs ship, because the comments in this codebase are most of what makes the contract learnable —
+      several of them are the only written record of a rule (the heartbeat's first frame being immediate,
+      absent-means-offline, why ListBridgedDevices answers `true` from its catch).
+
+      CS1591 stays off. Demanding a doc comment on every public member buys ceremony on 119 types and would
+      push authors toward writing "Gets the name." where the useful comment is elsewhere. CS1573 goes with it:
+      several records here document the two parameters that need explaining and leave the obvious ones alone,
+      which is the right call and which that warning exists to forbid.
+    -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CS1573</NoWarn>
+  </PropertyGroup>
+
+  <!--
+    Container and arm64-Linux builds set REMAESTRO_SYSTEM_PROTOC=1 so every project uses the distro's protoc
+    instead of the one bundled with Grpc.Tools, which segfaults on arm64 Linux under some container runtimes.
+    Ordinary host builds don't set the variable and keep the bundled protoc unchanged.
+
+    Carried over from the product repo because it is not specific to it: anyone building a plugin in a
+    container on a Pi hits the same thing.
+  -->
+  <PropertyGroup Condition="'$(REMAESTRO_SYSTEM_PROTOC)' == '1'">
+    <Protobuf_ProtocFullPath>/usr/bin/protoc</Protobuf_ProtocFullPath>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/dotnet/">
+    <Project Path="dotnet/src/Remaestro.Grpc/Remaestro.Grpc.csproj" />
+    <Project Path="dotnet/src/Remaestro.Sdk/Remaestro.Sdk.csproj" />
+    <Project Path="dotnet/src/Remaestro.ProxyAgent/Remaestro.ProxyAgent.csproj" />
+    <Project Path="dotnet/tests/Remaestro.ProxyAgent.Tests/Remaestro.ProxyAgent.Tests.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/dotnet/Remaestro.Drivers.Http/Remaestro.Drivers.Http.csproj" />
+    <Project Path="samples/dotnet/Remaestro.Drivers.Lutron/Remaestro.Drivers.Lutron.csproj" />
+    <Project Path="samples/dotnet/Remaestro.Drivers.Screen/Remaestro.Drivers.Screen.csproj" />
+    <Project Path="samples/dotnet/Remaestro.Drivers.Jellyfin/Remaestro.Drivers.Jellyfin.csproj" />
+  </Folder>
+</Solution>
