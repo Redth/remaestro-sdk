@@ -161,6 +161,17 @@ A driver emits a frame on `StreamEvents` with `type == "driver.heartbeat"`, an e
 `DriverRuntimeMessage` in `runtime`. **The first frame goes out immediately**, before any wait — that is
 what lets the hub tell a driver too old to answer from a new one that has not ticked yet.
 
+**Set `timestamp_unix_ms` on the frame.** This is the field most easily missed and it is not optional in
+any useful sense: the hub takes the *age* of a beat from what the frame says, not from when it arrived.
+Left at proto3's zero, your driver reads as last seen in 1970 — reported as having stopped, permanently,
+while beating perfectly. The C# SDK fills it in and no generator will.
+
+**The frame is routed by the field it carries, not by its type.** `runtime` present makes it a heartbeat;
+`hold` present makes it a hold. Send the `type` string as well — it is what the protocol says and a later
+hub may read it — but a frame that carries the type and forgets the submessage is not a heartbeat that got
+lost. It is an ordinary device event with an empty `device_id`, and it would land in front of every rule in
+the house at whatever rate you beat. Recent hubs drop that frame and say so once; older ones do not.
+
 Three things had to be said before anyone could read anything into silence. All three are on the frame
 rather than the descriptor, deliberately: a descriptor is *cached*, keyed on a stamp taken from one
 entrypoint file, and a plugin whose entrypoint is a launcher script can change everything behind it without
@@ -217,7 +228,7 @@ Send a frame with `type == "driver.hold"` and `hold` set:
 
 | Field | |
 |---|---|
-| `id` | stable for the life of one hold, so the frame that ends it names the same one that began it |
+| `id` | stable for the life of one hold, so the frame that ends it names the same one that began it. **Required** — a hold with an empty id is dropped, silently, and there is nothing to see |
 | `device_id` | which device; empty means the process itself |
 | `reason` | one phrase for whoever is looking at the screen — *"waiting for the button on the bridge"* |
 | `until_unix_ms` | when you expect to stop waiting; **0 means you do not know**, which is honest and common |
@@ -256,6 +267,9 @@ is coming.
 
 The C# SDK does all of this. Nothing else will.
 
+`samples/python/` is this checklist worked through end to end — codegen, packaging, signing, install and
+launch — with a note at each step that cost more than the line here suggests.
+
 - [ ] Set `protocol_version` on the descriptor to the highest `Protocol` enum value you generated.
 - [ ] Leave `min_hub_protocol` unset unless you have a reason; if you set one, it may only ever go down.
 - [ ] Answer `Describe` even when `hub_protocol` is older than you like. Refusing is the hub's job.
@@ -266,7 +280,18 @@ The C# SDK does all of this. Nothing else will.
 - [ ] Set `availability` alongside it — `ANSWERED`, `UNSUPPORTED`, `UNAVAILABLE` or `UNKNOWN_DEVICE`.
 - [ ] Send `heartbeat_interval_ms` on every frame.
 - [ ] Send `heartbeat_independent`, and send it **truthfully**. Omitting it is not the same as `false`.
-- [ ] Release every hold you begin.
+- [ ] Set `timestamp_unix_ms` on every frame you send, heartbeats included. Zero means 1970, and the hub
+      believes you.
+- [ ] Put `runtime` on a heartbeat and `hold` on a hold. The type string alone routes nothing.
+- [ ] Give every hold an `id`, and release every hold you begin.
 - [ ] Redact your own secrets before anything reaches `GetDiagnostics`. The hub cannot do it for you and
       there is no wire-level equivalent — this is the one obligation a C# author gets invisibly and every
       other author gets nothing at all.
+- [ ] **And redact the bytes, not only the words.** A `DiagnosticRecord` carries the same moment twice —
+      `text` and `hex` — and `endpoint` is a third place a credential can sit. Masking the readable field
+      and passing the payload through leaves the password in full, one column to the right, in a
+      `trace.json` the hub writes into a support bundle somebody then emails. This is not hypothetical:
+      the .NET SDK shipped exactly that bug, and its own guard enumerated the record's string fields by
+      hand and stopped one short of `hex`. Blot the payload **before** you truncate it for rendering — half
+      a password is a shorter password, not a redacted one. `samples/python/lamp/diag.py` is the worked
+      example.
