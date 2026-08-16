@@ -174,6 +174,26 @@ the decision above. **First release is the only cheap moment to seal, hide or re
 public-surface pass before publishing rather than after. Note `net10.0`-only is a real constraint on who can
 consume it, and that **GitHub Packages requires auth even to restore public packages** — verified. That makes
 GH feeds fine for dogfooding and *not* a public channel; NuGet.org is the public one.
+
+**The NuGet.org publish is deferred indefinitely, and the reason matters more than the status.** The gate
+set earlier was *hold until the working proof is cashed*. `#264` cashed it — a Python plugin built from the
+published proto, signed, installed by URL and driven by the hub — and the decision on reading that was to
+keep holding: *"we can defer nuget publish much longer yet."*
+
+The reason is what makes this a decision rather than a delay: **while nothing is on NuGet.org, removing or
+renaming anything in the SDK is free.** Three changes since that gate was set would each have been a
+breaking change to strangers the day after publication — `#255` deleted a default interface member and
+renamed a method to match its rpc, `#262` reshaped the descriptor, and `#265` changed what `plugin.json`
+says. **That churn is evidence the deferral is right, not evidence the SDK is unstable**: every one of the
+three was a correction, and a published package would have turned each into a major version, a compatibility
+shim, or a wrong thing kept because removing it was no longer allowed.
+
+So the sentence above — *first release is the only cheap moment to seal, hide or rename anything* — is still
+true, and its practical form today is that **every** moment is that moment. The public-surface pass is not
+urgent while nothing is published; it becomes the gate on the day a publication date exists. Nothing else in
+this phase changes: GitHub Packages remains the dogfooding feed, `net10.0`-only remains a real constraint on
+who could consume it, and NuGet.org remains the public channel whenever it is opened.
+
 ### Phase 3 — the proof, as a real deliverable
 
 A non-.NET plugin, end to end, installed the way a user would install it. Both audits left a reproduction
