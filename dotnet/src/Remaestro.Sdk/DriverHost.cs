@@ -48,8 +48,19 @@ public sealed class DriverServiceImpl : Driver.DriverBase
     /// <summary>The call's cancellation token. Guarded so a missing context can't masquerade as a driver error.</summary>
     static CancellationToken Token(ServerCallContext? context) => context?.CancellationToken ?? CancellationToken.None;
 
+    /// <summary>
+    /// What the hub said about itself on the last <c>Describe</c>, or 0 if it has not asked yet or is older
+    /// than negotiation. Exposed so a driver — or a test — can see the other end's version rather than
+    /// assume it.
+    /// </summary>
+    public uint HubProtocol { get; private set; }
+
     public override Task<DriverDescriptor> Describe(DescribeRequest request, ServerCallContext context)
     {
+        // Recorded and never refused. A driver that throws here is a driver the hub cannot name in the
+        // sentence it puts in front of a person — refusing is the hub's job because the hub has the screen.
+        HubProtocol = request.HubProtocol;
+
         var d = new DriverDescriptor
         {
             TypeId = _driver.TypeId,
@@ -58,8 +69,11 @@ public sealed class DriverServiceImpl : Driver.DriverBase
             SupportsNavigation = _driver.SupportsNavigation,
             SupportsEpg = _driver.SupportsEpg,
             SupportsDeviceRemotes = _driver.SupportsDeviceRemotes,
+            ProtocolVersion = DriverProtocol.Current,
             Traits = { _driver.Traits }
         };
+        if (_driver.MinHubProtocol is { } floor) d.MinHubProtocol = floor;
+        d.Capabilities.AddRange(Capabilities(_driver));
         d.ConfigSchema.AddRange(_driver.ConfigSchema.Select(ToProto));
         d.Commands.AddRange(_driver.Commands.Select(ToProto));
         d.Events.AddRange(_driver.Events.Select(ToProto));
@@ -69,15 +83,39 @@ public sealed class DriverServiceImpl : Driver.DriverBase
         return Task.FromResult(d);
     }
 
+    /// <summary>
+    /// What goes in <c>DriverDescriptor.capabilities</c>: whatever the driver declared, plus the three
+    /// <c>Supports*</c> booleans folded in.
+    /// <para>
+    /// <b>The fold is what makes the list authoritative.</b> The hub's reading rule is that a non-empty list
+    /// is the complete answer and the booleans are only consulted when it is empty — so a driver that set
+    /// <c>SupportsNavigation</c> and then declared one unrelated capability would otherwise have silently
+    /// un-declared its navigation. Doing it here means no existing driver has to be touched and none can
+    /// make that mistake.
+    /// </para>
+    /// <para>Ordinal-distinct and in a stable order, because this string list is hashed into a descriptor
+    /// cache key and a set that reorders itself would invalidate it on every start.</para>
+    /// </summary>
+    public static IReadOnlyList<string> Capabilities(IRemaestroDriver driver)
+    {
+        var declared = new List<string>(driver.Capabilities);
+        if (driver.SupportsNavigation) declared.Add(DriverCapability.Navigation);
+        if (driver.SupportsEpg) declared.Add(DriverCapability.Epg);
+        if (driver.SupportsDeviceRemotes) declared.Add(DriverCapability.DeviceRemotes);
+        return declared.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+    }
+
     /// <summary>The device's live input list, when it knows one (<see cref="IInputSourceDevice"/>).</summary>
     public override async Task<InputListMessage> ListInputs(DeviceRef request, ServerCallContext context)
     {
-        if (!_devices.TryGetValue(request.DeviceId, out var device) || device is not IInputSourceDevice src)
-            return new InputListMessage { Supported = false };
+        if (!_devices.TryGetValue(request.DeviceId, out var device))
+            return new InputListMessage { Supported = false, Availability = Availability.UnknownDevice };
+        if (device is not IInputSourceDevice src)
+            return new InputListMessage { Supported = false, Availability = Availability.Unsupported };
         try
         {
             var inputs = await src.ListInputsAsync(Token(context));
-            var msg = new InputListMessage { Supported = true };
+            var msg = new InputListMessage { Supported = true, Availability = Availability.Answered };
             msg.Inputs.AddRange(inputs.Select(i => new InputSourceMessage
             {
                 Id = i.Id, Label = i.Label, Detail = i.Detail, Current = i.Current,
@@ -87,22 +125,26 @@ public sealed class DriverServiceImpl : Driver.DriverBase
         catch
         {
             // A device that can't be reached right now shouldn't break the picker — fall back to statics.
-            return new InputListMessage { Supported = false };
+            // `supported` stays false so an older hub falls back exactly as it always did; `availability`
+            // says which of the three "no"s this was, which is the thing that could not be said before.
+            return new InputListMessage { Supported = false, Availability = Availability.Unavailable };
         }
     }
 
     /// <summary>The device's guide over the asked window, when it's a source (<see cref="IEpgSource"/>).</summary>
     public override async Task<EpgMessage> GetEpg(EpgRequest request, ServerCallContext context)
     {
-        if (!_devices.TryGetValue(request.DeviceId, out var device) || device is not IEpgSource src)
-            return new EpgMessage { Supported = false };
+        if (!_devices.TryGetValue(request.DeviceId, out var device))
+            return new EpgMessage { Supported = false, Availability = Availability.UnknownDevice };
+        if (device is not IEpgSource src)
+            return new EpgMessage { Supported = false, Availability = Availability.Unsupported };
         try
         {
             var from = DateTimeOffset.FromUnixTimeSeconds(request.FromUnix);
             var to = DateTimeOffset.FromUnixTimeSeconds(request.ToUnix);
             var data = await src.GetEpgAsync(from, to, Token(context));
 
-            var msg = new EpgMessage { Supported = true };
+            var msg = new EpgMessage { Supported = true, Availability = Availability.Answered };
             msg.Channels.AddRange(data.Channels.Select(c => new EpgChannelMessage
             {
                 Id = c.Id, Name = c.Name, Logo = c.Logo ?? "", Number = c.Number ?? "", StreamUrl = c.StreamUrl ?? "",
@@ -120,19 +162,23 @@ public sealed class DriverServiceImpl : Driver.DriverBase
         catch
         {
             // An unreachable feed shouldn't blank the whole grid — this source just contributes nothing.
-            return new EpgMessage { Supported = false };
+            // Unavailable rather than unsupported: nothing has been learned about whether it is a guide
+            // source, so "this device has no guide" is not a conclusion anyone may draw or cache.
+            return new EpgMessage { Supported = false, Availability = Availability.Unavailable };
         }
     }
 
     /// <summary>The device's live app list, when it knows one (<see cref="IAppListDevice"/>).</summary>
     public override async Task<AppListMessage> ListApps(DeviceRef request, ServerCallContext context)
     {
-        if (!_devices.TryGetValue(request.DeviceId, out var device) || device is not IAppListDevice src)
-            return new AppListMessage { Supported = false };
+        if (!_devices.TryGetValue(request.DeviceId, out var device))
+            return new AppListMessage { Supported = false, Availability = Availability.UnknownDevice };
+        if (device is not IAppListDevice src)
+            return new AppListMessage { Supported = false, Availability = Availability.Unsupported };
         try
         {
             var apps = await src.ListAppsAsync(Token(context));
-            var msg = new AppListMessage { Supported = true };
+            var msg = new AppListMessage { Supported = true, Availability = Availability.Answered };
             foreach (var a in apps)
             {
                 var app = new AppMessage
@@ -148,7 +194,7 @@ public sealed class DriverServiceImpl : Driver.DriverBase
         catch
         {
             // Same as inputs: an unreachable device falls back to whatever apps the driver declares.
-            return new AppListMessage { Supported = false };
+            return new AppListMessage { Supported = false, Availability = Availability.Unavailable };
         }
     }
 
@@ -158,31 +204,35 @@ public sealed class DriverServiceImpl : Driver.DriverBase
     /// </summary>
     public override async Task<OptionsListMessage> ListOptions(OptionsRequest request, ServerCallContext context)
     {
-        if (!_devices.TryGetValue(request.DeviceId, out var device) || device is not IOptionSourceDevice source)
-            return new OptionsListMessage { Supported = false };
+        if (!_devices.TryGetValue(request.DeviceId, out var device))
+            return new OptionsListMessage { Supported = false, Availability = Availability.UnknownDevice };
+        if (device is not IOptionSourceDevice source)
+            return new OptionsListMessage { Supported = false, Availability = Availability.Unsupported };
         try
         {
             var options = await source.ListOptionsAsync(request.OptionsKey, Token(context));
-            var msg = new OptionsListMessage { Supported = true };
+            var msg = new OptionsListMessage { Supported = true, Availability = Availability.Answered };
             msg.Options.AddRange(options.Select(ToProto));
             return msg;
         }
         catch
         {
             // A device that can't be reached shouldn't break the picker — fall back to typing a value.
-            return new OptionsListMessage { Supported = false };
+            return new OptionsListMessage { Supported = false, Availability = Availability.Unavailable };
         }
     }
 
     /// <summary>What sits behind this device, when it fronts a bridge (<see cref="IBridgeDevice"/>).</summary>
     public override async Task<BridgedDeviceListMessage> ListBridgedDevices(DeviceRef request, ServerCallContext context)
     {
-        if (!_devices.TryGetValue(request.DeviceId, out var device) || device is not IBridgeDevice bridge)
-            return new BridgedDeviceListMessage { Supported = false };
+        if (!_devices.TryGetValue(request.DeviceId, out var device))
+            return new BridgedDeviceListMessage { Supported = false, Availability = Availability.UnknownDevice };
+        if (device is not IBridgeDevice bridge)
+            return new BridgedDeviceListMessage { Supported = false, Availability = Availability.Unsupported };
         try
         {
             var found = await bridge.ListBridgedDevicesAsync(Token(context));
-            var msg = new BridgedDeviceListMessage { Supported = true };
+            var msg = new BridgedDeviceListMessage { Supported = true, Availability = Availability.Answered };
             foreach (var d in found)
             {
                 var m = new BridgedDeviceMessage { Id = d.Id, Name = d.Name, Kind = d.Kind, Detail = d.Detail };
@@ -194,7 +244,10 @@ public sealed class DriverServiceImpl : Driver.DriverBase
         catch
         {
             // An unreachable bridge shouldn't read as "this isn't a bridge" — there's just nothing to offer.
-            return new BridgedDeviceListMessage { Supported = true };
+            // That comment was the bug report for the other five, and this is now the whole class: every one
+            // of them answers Unavailable here, and only this one still needs `supported = true` to carry the
+            // distinction to a hub too old to read the enum.
+            return new BridgedDeviceListMessage { Supported = true, Availability = Availability.Unavailable };
         }
     }
 
@@ -229,17 +282,21 @@ public sealed class DriverServiceImpl : Driver.DriverBase
     /// </summary>
     public override async Task<DeviceRemoteMessage> GetRemote(DeviceRef request, ServerCallContext context)
     {
-        if (!_devices.TryGetValue(request.DeviceId, out var device) || device is not IRemoteSurfaceDevice source)
-            return new DeviceRemoteMessage { Supported = false };
+        if (!_devices.TryGetValue(request.DeviceId, out var device))
+            return new DeviceRemoteMessage { Supported = false, Availability = Availability.UnknownDevice };
+        if (device is not IRemoteSurfaceDevice source)
+            return new DeviceRemoteMessage { Supported = false, Availability = Availability.Unsupported };
         try
         {
+            // A null from a device that *is* a remote surface is an answer — "not this unit" — and not a
+            // failure, so it reads Unsupported rather than Unavailable. The throw below is the other one.
             return await source.GetRemoteAsync(Token(context)) is { } spec
-                ? new DeviceRemoteMessage { Supported = true, Remote = ToProto(spec) }
-                : new DeviceRemoteMessage { Supported = false };
+                ? new DeviceRemoteMessage { Supported = true, Availability = Availability.Answered, Remote = ToProto(spec) }
+                : new DeviceRemoteMessage { Supported = false, Availability = Availability.Unsupported };
         }
         catch
         {
-            return new DeviceRemoteMessage { Supported = false };
+            return new DeviceRemoteMessage { Supported = false, Availability = Availability.Unavailable };
         }
     }
 
@@ -414,6 +471,11 @@ public sealed class DriverServiceImpl : Driver.DriverBase
     /// make that test flake on a loaded machine.
     /// </para>
     /// </summary>
+    /// <remarks>
+    /// <b>Whatever it is set to goes on the wire.</b> Every frame carries this interval, so a hub does not
+    /// have to guess how long silence has to be to mean anything — which is what it was doing, against this
+    /// class's own default, for every driver in every language.
+    /// </remarks>
     public TimeSpan HeartbeatInterval { get; init; } = TimeSpan.FromSeconds(2);
 
     public override async Task StreamEvents(StreamEventsRequest request, IServerStreamWriter<DeviceEventMessage> responseStream, ServerCallContext context)
@@ -452,7 +514,7 @@ public sealed class DriverServiceImpl : Driver.DriverBase
         {
             while (!ct.IsCancellationRequested)
             {
-                _events.Writer.TryWrite(DriverRuntime.Frame());
+                _events.Writer.TryWrite(DriverRuntime.Frame(HeartbeatInterval, _driver.HeartbeatIndependent));
                 await Task.Delay(HeartbeatInterval, ct);
             }
         }
@@ -563,8 +625,43 @@ public sealed class DriverServiceImpl : Driver.DriverBase
             Type = e.Type,
             TimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };
+
+        // A hold is raised through the same string-keyed channel every other event uses — that is the only
+        // channel a device has — and is lifted back into its typed message here, so nothing string-shaped
+        // reaches the hub and the keys stay an implementation detail of this SDK. See DeviceBase.Hold.
+        if (e.Type == DeviceEvents.DriverHold && e.Data is { } hold)
+        {
+            msg.Hold = ToHold(deviceId, hold);
+            _events.Writer.TryWrite(msg);
+            return;
+        }
+
         Fill(msg.Data, e.Data);
         _events.Writer.TryWrite(msg);
+    }
+
+    /// <summary>
+    /// One hold frame's payload. Public and static so the mapping — including a malformed <c>until</c>,
+    /// which must read as "no horizon" rather than as an exception on the event path — is assertable
+    /// without a stream.
+    /// </summary>
+    public static DriverHoldMessage ToHold(string deviceId, IReadOnlyDictionary<string, string> data)
+    {
+        var msg = new DriverHoldMessage
+        {
+            Id = data.GetValueOrDefault(DeviceEvents.HoldKeys.Id, ""),
+            DeviceId = deviceId,
+            Reason = data.GetValueOrDefault(DeviceEvents.HoldKeys.Reason, ""),
+            Released = string.Equals(data.GetValueOrDefault(DeviceEvents.HoldKeys.Released), "true", StringComparison.OrdinalIgnoreCase),
+        };
+
+        // 0 is "the driver does not know when this ends", which is the honest answer to a pairing wait and
+        // is also what an unparseable value has to become — an event raised from a device's own thread is
+        // not a place to throw.
+        if (long.TryParse(data.GetValueOrDefault(DeviceEvents.HoldKeys.UntilUnixMs), System.Globalization.CultureInfo.InvariantCulture, out var until) && until > 0)
+            msg.UntilUnixMs = until;
+
+        return msg;
     }
 
     static void Fill(MapField<string, string> map, IReadOnlyDictionary<string, string>? src)

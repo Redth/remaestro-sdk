@@ -21,6 +21,13 @@ public sealed class HttpDriver : IRemaestroDriver
     public string DisplayName => "HTTP / Webhook";
     public string Description => "Sends arbitrary HTTP(S) requests — for IoT gadgets, AV gear web APIs, and webhooks.";
 
+    /// <summary>
+    /// What this driver implements, declared rather than left to be discovered by calling — see
+    /// <see cref="DriverCapability"/>. This one really does capture its conversation with the device, so it
+    /// says so; a driver that answers SetDiagnostics with an empty buffer must not.
+    /// </summary>
+    public IReadOnlyList<string> Capabilities { get; } = [DriverCapability.Diagnostics];
+
     public IReadOnlyList<ConfigField> ConfigSchema { get; } =
     [
         new("baseUrl", "Base URL", Help: "Optional; prepended to relative request URLs, e.g. http://192.168.1.50")

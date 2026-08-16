@@ -102,11 +102,37 @@ public static class DriverRuntime
     }
 
     /// <summary>The heartbeat frame as it goes on the wire: a device event that is about no device.</summary>
-    public static DeviceEventMessage Frame() => new()
+    /// <param name="interval">
+    /// How often this frame is sent. <b>On the frame rather than the descriptor, and that is the point.</b>
+    /// Without it the hub's "has this driver stopped?" threshold is a constant chosen against one SDK's
+    /// default — 30 s, fifteen of this SDK's 2 s intervals — and a plugin that beats once a minute is
+    /// reported as silent thirty seconds into working perfectly.
+    /// </param>
+    /// <param name="independent">
+    /// Whether the beat keeps going while a command is being handled. True for anything built on
+    /// <see cref="DriverHost"/>, measured rather than assumed; a driver that couples the two says false and
+    /// the hub then reads nothing at all into its silence. See <c>IRemaestroDriver.HeartbeatIndependent</c>.
+    /// </param>
+    public static DeviceEventMessage Frame(TimeSpan interval, bool independent) => new()
     {
         DeviceId = "",
         Type = DeviceEvents.DriverHeartbeat,
         TimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-        Runtime = Sample(),
+        Runtime = Describe(Sample(), interval, independent),
     };
+
+    /// <summary>
+    /// Put the two facts about the beat itself onto a sample. Separate from <see cref="Sample()"/> because
+    /// everything there is a counter the runtime handed over, and these two are statements the driver makes
+    /// about its own behaviour — a different kind of claim, and the only two on this message that another
+    /// process could not in principle verify.
+    /// </summary>
+    public static DriverRuntimeMessage Describe(DriverRuntimeMessage msg, TimeSpan interval, bool independent)
+    {
+        // Clamped up to 1 ms: a zero would read as "declared, and the answer is never", which is the one
+        // thing an interval must never be able to say by accident. A negative one is nonsense from a caller.
+        msg.HeartbeatIntervalMs = (uint)Math.Clamp((long)interval.TotalMilliseconds, 1, uint.MaxValue);
+        msg.HeartbeatIndependent = independent;
+        return msg;
+    }
 }

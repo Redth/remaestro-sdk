@@ -64,6 +64,51 @@ public interface IRemaestroDriver
     /// </summary>
     bool SupportsDeviceRemotes => false;
 
+    /// <summary>
+    /// What this driver's devices can do, declared rather than left to be discovered by calling — see
+    /// <see cref="DriverCapability"/> for the vocabulary.
+    /// <para>
+    /// <b>The three <c>Supports*</c> flags above are folded in for you</b>, so a driver that already sets
+    /// them need not repeat them here. What this adds is everything they cannot express: a device that
+    /// enumerates its inputs, apps or options, or fronts a bridge, was previously knowable only by making
+    /// the call and reading a boolean that meant three different things.
+    /// </para>
+    /// <para>
+    /// <b>Declare what you implement.</b> Declaring a capability whose rpc is missing is worse than
+    /// declaring nothing — the hub will call it, and the navigation surfaces in particular have no
+    /// exception handling at all, so the user gets an error where an undeclared driver would have degraded.
+    /// </para>
+    /// </summary>
+    IReadOnlyList<string> Capabilities => [];
+
+    /// <summary>
+    /// Whether this driver's heartbeat keeps beating while it is handling a command.
+    /// <para>
+    /// <b>True here, and true in fact, for anything built on <see cref="DriverHost"/>.</b> The beat is its
+    /// own task writing into the event channel, drained on the <c>StreamEvents</c> stream — a different
+    /// HTTP/2 stream from the one a command blocks — and it has been measured going on beating at its
+    /// normal cadence with a device stuck for ever inside <c>ExecuteAsync</c>.
+    /// </para>
+    /// <para>
+    /// <b>It is overridable because the protocol asks rather than requires.</b> A driver that takes the
+    /// beat into its own hands and couples it to its command loop must say so by returning false; the hub
+    /// then never reads that driver's silence as meaning anything. Lying in the true direction is the one
+    /// mistake with a cost — it invites a reader to conclude that a busy driver has stopped.
+    /// </para>
+    /// </summary>
+    bool HeartbeatIndependent => true;
+
+    /// <summary>
+    /// The oldest hub protocol version this driver will work against, or null — the default — for "as new
+    /// as the contract I was built from".
+    /// <para>
+    /// Null is the safe reading and is almost always right. Override it only once you know your driver uses
+    /// nothing newer than some earlier version, which <i>widens</i> the set of hubs it runs on. The floor
+    /// can only ever move that way: a driver that raised it would be breaking hubs that already ran it.
+    /// </para>
+    /// </summary>
+    uint? MinHubProtocol => null;
+
     Task<IRemaestroDevice> CreateDeviceAsync(string deviceId, string name, IReadOnlyDictionary<string, string> config, CancellationToken ct);
 }
 

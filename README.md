@@ -23,6 +23,7 @@ everything you need on your side of it.
 | **[`samples/dotnet`](samples/dotnet)** | Four real drivers, chosen to cover four different shapes of device. These ship in the product. |
 | **[`dotnet/src/Remaestro.ProxyAgent`](dotnet/src/Remaestro.ProxyAgent)** | A reference *proxy* — the other boundary, for hardware the hub cannot reach over the network. |
 | **[`dotnet/tests`](dotnet/tests)** | A conformance suite for that proxy protocol, written as literal wire vectors so it is portable to any language. |
+| **[`docs/driver-protocol.md`](docs/driver-protocol.md)** | **The negotiation, the capability list and the heartbeat's obligations** — the parts of the contract a plugin in another language has to implement by hand. |
 | **[`docs/`](docs)** | The specifications behind the parts of the contract that need more than a comment. |
 
 ### Why the proto is not under `dotnet/`
@@ -51,20 +52,38 @@ That is all of it. A ninety-line Python script has been run through the hub's re
 this — full device lifecycle, commands, state, the event stream and the heartbeat — with no change to the hub.
 
 **Not every RPC is required.** Six are effectively mandatory (`Describe`, `CreateDevice`, `ExecuteCommand`,
-`GetState`, `StreamEvents`, `DisposeDevice`); the rest are opt-in, and there are three different ways to say
-"I don't do that":
+`GetState`, `StreamEvents`, `DisposeDevice`); the rest are opt-in. **Say which you implement** in
+`DriverDescriptor.capabilities` — `inputs`, `epg`, `apps`, `device-remotes`, `bridge`, `options`,
+`navigation`, `diagnostics` — rather than leaving the hub to find out by calling. Anything you did not
+declare, it does not ask for; anything you did declare, it will. Declaring `navigation` in particular is a
+promise with teeth: that path has no exception handling, so declaring it without implementing all four RPCs
+surfaces an error to the user where an undeclared driver would have degraded quietly.
 
-- **a `supported` bool in the response** — `ListInputs`, `GetEpg`, `ListApps`, `GetRemote`,
-  `ListBridgedDevices`, `ListOptions`. Answering `supported: false` is always safe.
-- **a descriptor flag**, which stops the hub asking at all — `supports_navigation`, `supports_epg`,
-  `supports_device_remotes`. These are **promises**: declare navigation and you must implement all four
-  navigation RPCs, because that path is not caught.
+There are still three ways to say "not this one", and they answer at different moments:
+
+- **the capability list**, which stops the hub asking at all;
+- **`supported` + `availability` in the response** — `ListInputs`, `GetEpg`, `ListApps`, `GetRemote`,
+  `ListBridgedDevices`, `ListOptions`. `supported: false` is always safe; `availability` says *which* kind
+  of no it was, so an unreachable device is never read as a device that has nothing;
 - **returning `UNIMPLEMENTED`**, which the hub tolerates everywhere.
 
 > **A trap for anyone generating from the proto directly.** The six `supported` fields are plain proto3
 > `bool`s, so an unset field and an explicit `false` are byte-identical on the wire. Implement `GetEpg`
 > perfectly, forget `supported = true`, and you have silently built nothing. There is no compiler anywhere on
 > that path. The C# SDK sets it for you; nothing else will.
+
+**Both ends declare a version.** The hub sends `hub_protocol` on `DescribeRequest`; you send
+`protocol_version` on the descriptor, and optionally `min_hub_protocol`. The hub is the party that refuses a
+mismatch — you always answer `Describe`, because the hub is the one with a screen to explain it on.
+
+**Your heartbeat has to describe itself.** Send `heartbeat_interval_ms` on every frame, or the hub is
+guessing your cadence from someone else's default; and send `heartbeat_independent` truthfully, which is the
+one place a false claim costs a user something. A single-threaded plugin says `false` and loses nothing but
+a signal it could never have given.
+
+**[`docs/driver-protocol.md`](docs/driver-protocol.md) is the whole of it** — negotiation, capabilities,
+availability, the heartbeat's three declarations, and a checklist for a plugin generated straight from the
+proto.
 
 ---
 
@@ -98,7 +117,16 @@ public sealed class MyDriver : IRemaestroDriver
 `DriverHost` hosts the Kestrel gRPC server, assembles your descriptor, keeps the device registry, runs the
 event stream and the two-second heartbeat, turns exceptions into failed command results, and works out which
 optional RPCs you support **by looking at which interfaces your device implements**. Add `IEpgSource` and
-`GetEpg` starts answering; there is nothing to register.
+`GetEpg` starts answering; there is nothing to register. It also fills in the protocol version, folds your
+`Supports*` flags into the capability list, declares the heartbeat's interval and independence, and picks the
+right `availability` at each of the six optional answers — see
+[`docs/driver-protocol.md`](docs/driver-protocol.md) for what that means and why a plugin in another language
+has to do it by hand.
+
+What it cannot infer is what you *have not implemented yet*. Set `Capabilities` for anything the interfaces
+cannot express — a driver that captures its own traffic for `GetDiagnostics`, say — and set
+`HeartbeatIndependent` to `false` if you have taken the beat into your own hands and coupled it to your
+command loop.
 
 `DeviceBase` gives you a thread-safe state bag, change-debounced command and trait reporting, and `Online`
 derived from state where **absent means offline** — a lesson this project learned the hard way, when drivers
@@ -122,7 +150,9 @@ dotnet add package Remaestro.Plugins.Sdk
 
 Generate from `proto/driver.proto` with stock `protoc` and serve `maestro.Driver`. That is the entire
 integration; there are no custom options, no interceptors, no metadata requirements. Read the four process
-rules above, and read the `supported`-bool trap above twice.
+rules above, read the `supported`-bool trap above twice, and then work through the checklist at the end of
+[`docs/driver-protocol.md`](docs/driver-protocol.md) — every item on it is something the C# SDK does for a
+C# author and nothing does for you.
 
 ---
 
@@ -167,6 +197,9 @@ line between a microcontroller and a small Linux machine falls where it does.
 
 ## Documentation
 
+- **[`docs/driver-protocol.md`](docs/driver-protocol.md)** — version negotiation, the capability list, and
+  what a heartbeat has to declare before anyone may read anything into silence. **Read this first** if you
+  are generating from the proto rather than using the C# SDK.
 - **[`docs/navigation-spec.md`](docs/navigation-spec.md)** — the projection that lets any driver expose its
   content as a browsable library. Read this before implementing `INavigableDevice`.
 - **[`docs/driver-remotes.md`](docs/driver-remotes.md)** — how a driver draws its own remote control layout,

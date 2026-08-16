@@ -19,6 +19,13 @@ public sealed class ScreenDriver : IRemaestroDriver
     public string DisplayName => "Projection Screen or Lift";
     public string Description => "Motorised screens, lifts and masking over RS-232 — Dragonfly, Grandview, Elite and most tubular-motor controllers.";
 
+    /// <summary>
+    /// What this driver implements, declared rather than left to be discovered by calling — see
+    /// <see cref="DriverCapability"/>. This one really does capture its conversation with the device, so it
+    /// says so; a driver that answers SetDiagnostics with an empty buffer must not.
+    /// </summary>
+    public IReadOnlyList<string> Capabilities { get; } = [DriverCapability.Diagnostics];
+
     public IReadOnlyList<string> Traits { get; } = [DeviceTrait.Cover];
 
     public IReadOnlyList<ConfigField> ConfigSchema { get; } =
@@ -227,6 +234,14 @@ internal sealed class ScreenDevice : DeviceBase
 
         _ = Task.Run(async () =>
         {
+            // A declared hold, and the reason this driver is where the SDK demonstrates one: a screen can be
+            // configured to take up to five minutes to travel, which is well past the two minutes at which
+            // the hub starts saying a driver has stopped answering. Without this the honest report would be
+            // "unanswered for 4 min" about a motor doing exactly what it was told; with it the hub says what
+            // the wait is for, and — because the travel time is known in advance — when it ends. Releasing on
+            // cancellation is not optional: a hold left open is indistinguishable from the wedge it exists to
+            // rule out, which is why this is a `using` and not a pair of calls.
+            using var hold = Hold($"the screen is travelling {commandId}", DateTimeOffset.UtcNow + _travel);
             try
             {
                 await Task.Delay(_travel, settle.Token);

@@ -92,6 +92,14 @@ public sealed partial class JellyfinDriver : IRemaestroDriver
     // This server exposes a browsable content library — see docs/navigation-spec.md.
     public bool SupportsNavigation => true;
 
+    /// <summary>
+    /// What this driver implements — see <see cref="DriverCapability"/>. Only "diagnostics" is listed even
+    /// though this driver also has navigation: the three <c>Supports*</c> booleans are folded into the
+    /// descriptor's capability list by <c>DriverHost</c>, so repeating "navigation" here would be a second
+    /// copy of a fact that is already declared above. Declare here what no boolean can express.
+    /// </summary>
+    public IReadOnlyList<string> Capabilities { get; } = [DriverCapability.Diagnostics];
+
     public Task<IRemaestroDevice> CreateDeviceAsync(string deviceId, string name, IReadOnlyDictionary<string, string> config, CancellationToken ct)
     {
         var server = config.GetValueOrDefault("serverUrl", "").TrimEnd('/');

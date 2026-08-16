@@ -3,6 +3,39 @@ syntax = "proto3";
 option csharp_namespace = "Remaestro.Grpc";
 package maestro;
 
+// ---- The compatibility promise ------------------------------------------------------------------------
+//
+// This file is the whole contract between the hub and a driver, in any language. Plugins are built by
+// people who cannot see the hub's source and cannot be rebuilt when it changes, so the rules below are
+// not style — they are what makes a plugin published today still work against a hub shipped next year.
+//
+//   1. A field number is never reused and never renamed. Not even for a field nobody appears to send:
+//      the hub hashes numbers *and* names to decide whether a cached descriptor is still readable
+//      (`DriverManifest.Contract()`), "because a rename is a different meaning even at the same number".
+//   2. Fields are only added, at fresh numbers. A removed field is `reserved`, never recycled.
+//   3. Rpcs are only added. A driver that has never heard of one answers UNIMPLEMENTED, and the hub reads
+//      that as "this plugin is older than this feature" rather than as a fault. See GetRemote below.
+//   4. The meaning of an existing field is never narrowed. Widening — one more allowed string in a list
+//      whose unknown values are already ignored — is the only change that is safe in place.
+//
+// Anything that cannot be done under those four rules is a new protocol version, declared here and
+// negotiated on Describe.
+
+// Which revision of this file a party was built against. One integer, bumped whenever the four rules
+// above are not enough — never for an added field, because an added field is exactly what they permit.
+//
+// **The current version is the highest value in this enum.** That is the definition, so a generated SDK
+// can compute it rather than carrying a constant that drifts from the file it came from; the .NET SDK's
+// `DriverProtocol.Current` does exactly that, and a test asserts the two agree.
+enum Protocol {
+  PROTOCOL_UNSPECIFIED = 0;   // nobody was asked, or the party predates negotiation entirely
+
+  // 1 — negotiation itself, `DriverDescriptor.capabilities`, `Availability` on the six optional answers,
+  // the declared heartbeat interval and its independence, and declared holds. The first version there is
+  // any way to ask about, which is why it is also the first that can be refused.
+  PROTOCOL_V1 = 1;
+}
+
 // A driver runs out-of-process and hosts this service; the hub is the gRPC client.
 // One driver process can host many device instances (all events multiplex over one stream).
 service Driver {
@@ -59,7 +92,19 @@ service Driver {
   rpc GetDiagnostics (GetDiagnosticsRequest) returns (DiagnosticsMessage);
 }
 
-message DescribeRequest {}
+// What the hub says about itself when it asks a driver who it is. The other half of negotiation, and the
+// half that was missing: every guard the hub had protected *it* from an old driver, while a driver built
+// against a newer contract than the hub understands had no way to find out — proto3 drops unknown fields
+// in silence, so it simply lost them.
+message DescribeRequest {
+  // The highest `Protocol` value this hub knows. 0 means a hub older than negotiation.
+  //
+  // A driver may use it to leave out anything the hub cannot read, or to log a line its author will
+  // understand. **It must still answer** — refusing is the hub's job, because the hub is the party with a
+  // screen to explain it on. A driver that throws here is a driver that never gets named in the message a
+  // person actually reads.
+  uint32 hub_protocol = 1;
+}
 
 message DriverDescriptor {
   string type_id = 1;          // stable id, e.g. "http"
@@ -78,7 +123,92 @@ message DriverDescriptor {
   // Devices of this type may answer GetRemote. A hint, not a promise — an individual device can still say
   // no. It exists so a page listing thirty devices can tell which cards open a remote without thirty gRPC
   // round trips on every redraw; the call itself only happens when someone actually taps one.
+  //
+  // Superseded by `capabilities` ("device-remotes"), and still sent: see that field.
   bool supports_device_remotes = 13;
+
+  // The highest `Protocol` value this driver was built against. 0 means a driver older than negotiation,
+  // which is every driver that exists on the day this ships and is a perfectly good answer.
+  //
+  // This is the same integer the registry manifest calls `abi`. It is deliberately one number in both
+  // places: the manifest's job is to refuse an install before 15 MB is downloaded, this one's job is to
+  // refuse a launch, and two integers that could disagree would mean a plugin that installs and will not
+  // run — or worse, runs having claimed it would not.
+  uint32 protocol_version = 14;
+
+  // The *oldest* hub this driver will work against, when that is lower than `protocol_version`.
+  //
+  // **Unset does not mean zero — it means `protocol_version`.** Explicit presence, so the two are
+  // distinguishable, because the difference is the whole compatibility story: a plugin that says nothing
+  // is read as needing a hub at least as new as the contract it was built from, which is the safe
+  // reading, and a plugin that later discovers it only ever used version-1 features can declare a lower
+  // floor and *widen* what it runs on. A declared floor can only ever widen; that is why the registry
+  // manifest carries one integer today and stays true when this one arrives.
+  optional uint32 min_hub_protocol = 15;
+
+  // What this driver's devices can do, declared rather than discovered.
+  //
+  // **Why declaring beats calling.** Without this the hub learns what a driver implements by making the
+  // call and reading the answer, and the answer is a `bool supported` that means three different things —
+  // "not that kind of device", "not implemented", and "it threw". `Availability` below fixes the answer;
+  // this fixes the question, by making the structural half knowable before anything is called.
+  //
+  // The vocabulary, which is exactly the set of optional behaviours the hub asks about:
+  //
+  //   "inputs"          — devices answer ListInputs with a real source list
+  //   "epg"             — devices answer GetEpg (supersedes supports_epg)
+  //   "apps"            — devices answer ListApps
+  //   "device-remotes"  — devices answer GetRemote (supersedes supports_device_remotes)
+  //   "bridge"          — devices answer ListBridgedDevices
+  //   "options"         — devices answer ListOptions for a config field's options_key
+  //   "navigation"      — devices answer Browse/GetNode/SearchNodes/InvokeItem (supersedes
+  //                       supports_navigation); see docs/navigation-spec.md
+  //   "diagnostics"     — the driver answers SetDiagnostics/GetDiagnostics with real captured traffic
+  //
+  // An unknown string is ignored rather than an error — that is rule 4 above, and it is what lets a later
+  // hub name a capability this driver has never heard of without breaking it.
+  //
+  // **Reading rule.** An empty list is not "this driver does nothing": it is a driver older than this
+  // field, and the hub falls back to the three booleans. A non-empty list is authoritative, and a driver
+  // sending one must include every capability it has — including the three the booleans cover, which the
+  // SDK folds in for you. The booleans keep being sent so an older hub is unaffected.
+  //
+  // Declaring a capability whose rpc is not implemented is a bug in the plugin, not in the hub: the hub
+  // will call, and NavigationService has no catch at all around Browse and SearchNodes, so the user gets
+  // an error rather than a graceful degrade. Declare what you implement.
+  repeated string capabilities = 16;
+}
+
+// Why an optional answer is not an answer. Carried alongside `supported` on every rpc that has one.
+//
+// **This exists because one boolean was carrying three facts.** `supported = false` was returned when the
+// hub asked about a device the driver does not hold, when the device is simply not that kind of thing, and
+// when reaching the hardware threw — three situations with nothing in common except that the caller could
+// not tell them apart. The one place anybody noticed was ListBridgedDevices, which answers `supported =
+// true` on a throw with the comment "an unreachable bridge shouldn't read as 'this isn't a bridge'". That
+// comment was the bug report for the other five.
+//
+// **`supported` keeps its old meaning and is still sent.** A reader that has never heard of this enum
+// behaves exactly as before — which is why this could be added at all. When both are present this one
+// wins, because it is the one that can tell the three apart.
+enum Availability {
+  AVAILABILITY_UNSPECIFIED = 0;    // nothing said; read `supported` on its own, as before
+
+  AVAILABILITY_ANSWERED = 1;       // asked and answered. An empty list here is a real, empty answer.
+
+  // This device is not that kind of thing, and never will be. Permanent — a lamp has no TV guide. The
+  // hub may cache this and stop asking.
+  AVAILABILITY_UNSUPPORTED = 2;
+
+  // It is that kind of thing and could not answer just now — the hardware was unreachable, the request
+  // timed out, the call threw. **Transient.** Nothing about the device's shape has been learned, so
+  // asking again later is the right move and drawing "this has no apps" is not.
+  AVAILABILITY_UNAVAILABLE = 3;
+
+  // This driver does not hold that device id at all. Not a statement about the device's abilities: it is
+  // a statement that the hub and the driver disagree about what exists, which usually means the driver
+  // restarted and the device was never re-created. Worth a line in a log; never worth caching as a "no".
+  AVAILABILITY_UNKNOWN_DEVICE = 4;
 }
 
 // ---- Driver-supplied remote templates ----
@@ -128,6 +258,7 @@ message RemoteElementMessage {
 message DeviceRemoteMessage {
   bool supported = 1;          // false = this device has no remote of its own; the hub falls back
   RemoteTemplateMessage remote = 2;
+  Availability availability = 3;   // which kind of "no" — see Availability
 }
 
 // ---- Inputs ----
@@ -135,6 +266,7 @@ message DeviceRemoteMessage {
 message InputListMessage {
   bool supported = 1;                        // false = this device doesn't enumerate its inputs
   repeated InputSourceMessage inputs = 2;
+  Availability availability = 3;             // which kind of "no" — see Availability
 }
 
 message InputSourceMessage {
@@ -156,6 +288,7 @@ message EpgMessage {
   bool supported = 1;          // false = this device isn't a guide source
   repeated EpgChannelMessage channels = 2;
   repeated EpgProgrammeMessage programmes = 3;
+  Availability availability = 4;   // which kind of "no" — see Availability
 }
 
 message EpgChannelMessage {
@@ -184,6 +317,7 @@ message EpgProgrammeMessage {
 message AppListMessage {
   bool supported = 1;                        // false = this device doesn't enumerate its apps
   repeated AppMessage apps = 2;
+  Availability availability = 3;             // which kind of "no" — see Availability
 }
 
 message AppMessage {
@@ -212,11 +346,13 @@ message OptionsRequest {
 message OptionsListMessage {
   bool supported = 1;          // false = this device doesn't answer for that key
   repeated FieldOptionMessage options = 2;
+  Availability availability = 3;   // which kind of "no" — see Availability
 }
 
 message BridgedDeviceListMessage {
   bool supported = 1;                        // false = this device doesn't front anything
   repeated BridgedDeviceMessage devices = 2;
+  Availability availability = 3;             // which kind of "no" — see Availability
 }
 
 message BridgedDeviceMessage {
@@ -365,6 +501,10 @@ message DeviceEventMessage {
   // existed emits no heartbeat frame at all, so the hub holds no sample for it and can say "there was never
   // a number to take" — which is a different sentence from "we could not read it".
   DriverRuntimeMessage runtime = 5;
+
+  // Set only on a hold frame — `type` == "driver.hold", `data` empty. Same shape and the same reasoning as
+  // `runtime` above: a message is either there or it is not, where a scalar's zero would be a claim.
+  DriverHoldMessage hold = 6;
 }
 
 // A driver's own account of its runtime, carried on the StreamEvents stream that is already open.
@@ -414,6 +554,79 @@ message DriverRuntimeMessage {
   // process and is the failure mode a driver blocking on a socket actually produces.
   optional int32 thread_pool_threads = 10;
   optional int64 thread_pool_pending_items = 11;
+
+  // ---- The two facts that make the beat readable -------------------------------------------------------
+  //
+  // Both live here rather than on the descriptor, and that is deliberate. A descriptor is *cached*, keyed
+  // by a stamp taken from one entrypoint file, and a plugin whose entrypoint is a launcher script can
+  // change everything behind it without that stamp moving — so a promise about threading served from the
+  // descriptor could be a promise the running process no longer keeps. These arrive on the beat itself.
+  // They cannot be stale, and they cost eight bytes on a frame that is already going out.
+
+  // How often this driver intends to send this frame. **Without it every hub-side threshold is a constant
+  // chosen against one SDK's default.** The hub's is 30 s, which is fifteen of the .NET SDK's 2 s
+  // intervals and simply wrong for a plugin that beats once a minute — that plugin would be reported as
+  // silent thirty seconds into normal operation.
+  //
+  // Unset means "did not say" and the hub keeps its own default. Set it. A plugin that beats slowly and
+  // does not declare it is a plugin that will be described, accurately and uselessly, as having stopped.
+  optional uint32 heartbeat_interval_ms = 12;
+
+  // Whether this beat keeps going while the driver is handling a command.
+  //
+  // **The protocol asks rather than requires, and the reasoning matters more than the field.** Requiring
+  // independence would be one sentence to write and nothing to enforce: a single-threaded plugin — which
+  // is the natural shape in most languages, and the population this whole seam exists to admit — would
+  // violate it silently, and the hub would read "busy" as "stopped" with no way to know. A rule nobody can
+  // check is worse than a fact on the wire, because it licenses the reader to trust something false.
+  //
+  // So: **independence is a SHOULD, and declaring the truth is a MUST.** Emit the beat from a task, thread
+  // or timer that is not the one servicing ExecuteCommand, and set this true. If you cannot — a plugin
+  // with one thread and one loop — set it *false*, and the hub will never read your silence as anything at
+  // all. False costs you nothing except a liveness signal you were never able to give.
+  //
+  // **Unset is a third answer, not a synonym for false.** A driver that predates this field made no
+  // promise either way, and the hub goes on reading its silence exactly as it did before — collapsing the
+  // two would take a working signal away from every driver that has not been rebuilt. `false` is a
+  // positive declaration that silence means busy, and it is the one that buys you the protection.
+  optional bool heartbeat_independent = 13;
+}
+
+// "I am deliberately waiting, and here is until when." The third thing a hub needs before silence or a
+// slow call could ever mean anything.
+//
+// **Why it exists.** The hub can see that a call has been outstanding for ten minutes. It cannot see the
+// difference between a driver wedged for ten minutes and a driver waiting, correctly, for somebody to walk
+// over and press the pairing button on a bridge. Those two look identical from outside the process and
+// only the driver knows which it is — the same argument that put the GC counters on the heartbeat rather
+// than in /proc.
+//
+// Sent as a frame on StreamEvents: `type` == "driver.hold", `hold` set. Like the heartbeat it is about the
+// process rather than about a rule, so the hub takes it off the stream and it never reaches the event bus.
+message DriverHoldMessage {
+  // Stable for the life of one hold, so the frame that ends it names the same one it began. Any string the
+  // driver likes; a device id plus a verb is a good one.
+  string id = 1;
+
+  // Which device this is about. Empty means the process itself — a driver waiting on a login it needs
+  // before any of its devices can work.
+  string device_id = 2;
+
+  // One phrase, written for whoever is looking at the screen: "waiting for the button on the bridge".
+  // Not an error and not a status code — this is the sentence that replaces "unanswered for 10 min", so it
+  // has to say what the wait is *for*.
+  string reason = 3;
+
+  // When the driver expects to stop waiting. **0 means it does not know**, which is an honest and common
+  // answer — a pairing wait ends when a person acts. A hold with no horizon still says "this is deliberate";
+  // it just cannot say for how much longer.
+  int64 until_unix_ms = 4;
+
+  // This hold is over. Send one of these for every hold begun, including when the wait failed: a hold that
+  // is never released is indistinguishable from the wedge it was meant to explain, which would make this
+  // field a way of hiding exactly what it exists to reveal. The hub also drops every hold a driver holds
+  // when its process goes, so a crash cannot leave a permanent excuse behind.
+  bool released = 5;
 }
 
 message DisposeResponse { bool ok = 1; }

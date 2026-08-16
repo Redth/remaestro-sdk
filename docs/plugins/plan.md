@@ -102,17 +102,18 @@ in Phase 0 is cheap now and expensive-to-impossible later.
 
 ### Phase 0 — things that must land before a single package is published
 
-1. **Version negotiation, both directions.** `DescribeRequest` is empty and `DriverDescriptor` has no
-   version field. Every existing guard — the contract hash, `ReadingChanged`, `StampFor`, `UNIMPLEMENTED`
-   tolerance — protects *the hub from an old driver*. **A plugin built against a newer proto than the hub
-   understands has no way to find out.**
-2. **A declared capability list.** Generalise the three `supports_*` descriptor booleans to
-   `repeated string capabilities` (a new field, proto3-safe). Today the hub learns what a driver implements
-   *by calling and seeing what comes back*, and the six `supported` bools return `false` from three
-   different situations — unknown device, not implemented, **or an exception**. The single exception is
-   `ListBridgedDevices`, which returns `Supported = true` on a throw with the comment *"an unreachable
-   bridge shouldn't read as 'this isn't a bridge'"*. **That comment is the bug report for the other five**,
-   written by whoever hit it once and fixed it locally.
+1. ~~**Version negotiation, both directions.**~~ **Shipped.** `DescribeRequest` carries `hub_protocol`;
+   `DriverDescriptor` carries `protocol_version` and an optional `min_hub_protocol`. Every guard that
+   existed before it protected *the hub from an old driver*; this is the other direction, which is the one a
+   published SDK creates. See [`docs/driver-protocol.md`](../driver-protocol.md) §2.
+2. ~~**A declared capability list.**~~ **Shipped**, in two halves, because the three `supports_*` descriptor
+   booleans and the six runtime `supported` bools were two different bugs. `repeated string capabilities`
+   fixes the *question* — what a driver implements is knowable before anything is called — and an
+   `Availability` enum beside every `supported` bool fixes the *answer*, which used to mean "unknown
+   device", "not implemented" and "it threw" all at once. The single exception was `ListBridgedDevices`,
+   which returns `Supported = true` on a throw with the comment *"an unreachable bridge shouldn't read as
+   'this isn't a bridge'"* — **that comment was the bug report for the other five**. See
+   [`docs/driver-protocol.md`](../driver-protocol.md) §3.
 3. **Kill the silent default.** `INavigableDevice.SearchAsync` returns an empty listing by default, which is
    how HDHomeRun's search came to return nothing forever (`#255`). Removing it after the first publish is a
    breaking change to strangers. Pair with an **SDK startup assertion** that warns when declaration and
@@ -120,8 +121,16 @@ in Phase 0 is cheap now and expensive-to-impossible later.
 4. **Resolve the proto/SDK naming divergence.** The proto says `SearchNodes`/`Browse`/`GetNode`; the SDK says
    `SearchAsync`/`BrowseAsync`/`GetNodeAsync`. **Every generated non-.NET SDK will carry the proto's names**,
    so a second language makes this worse, not better.
-5. **Crash restart (`#152`).** Nothing restarts a crashed driver today. Documented and parked at
-   `DriverRuntimeStore.cs:71-84`. Third-party code makes it structural rather than untidy.
+5. **Liveness at the driver boundary (`#152`).** ~~Nothing restarts a crashed driver today.~~ The framing
+   here was wrong: nothing *restarts*, and nothing should — the dangerous case is the hang rather than the
+   crash, and a hub that kills a driver on a guess costs a room going dark. What was missing was that a
+   driver which stops working produced **no signal of any kind**, and the hub now reports one.
+   <br>**The protocol half is shipped**: the heartbeat declares its interval, so a threshold is no longer a
+   constant taken from one SDK's default; it declares whether it is independent of command handling, which
+   the protocol *asks* rather than requires because a rule nobody can check invites the reader to trust
+   something false; and a driver can declare a **hold** — "I am deliberately waiting, until *T*". See
+   [`docs/driver-protocol.md`](../driver-protocol.md) §4.
+   <br>Still open, and hub-side rather than protocol: no driver call carries a deadline.
 6. **A secret-redaction obligation that survives leaving C#.** `DriverHost.cs:255` registers config secrets
    for redaction automatically, so a C# plugin gets it invisibly and **a Python plugin gets nothing** — skip
    it and every captured diagnostic ships the device's password. There is no wire-level equivalent. This is

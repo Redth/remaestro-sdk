@@ -17,6 +17,13 @@ public sealed class LutronDriver : IRemaestroDriver
     public string DisplayName => "Lutron RadioRA 2 / HomeWorks";
     public string Description => "Lutron processors over the integration protocol. Set a light's level, raise and lower it, and see changes made at the keypads.";
 
+    /// <summary>
+    /// What this driver implements, declared rather than left to be discovered by calling — see
+    /// <see cref="DriverCapability"/>. This one really does capture its conversation with the device, so it
+    /// says so; a driver that answers SetDiagnostics with an empty buffer must not.
+    /// </summary>
+    public IReadOnlyList<string> Capabilities { get; } = [DriverCapability.Diagnostics];
+
     /// <summary>What this type is for, so a list can scope itself to the job. See <see cref="DeviceTrait"/>.</summary>
     public IReadOnlyList<string> Traits { get; } = [DeviceTrait.Lighting];
 

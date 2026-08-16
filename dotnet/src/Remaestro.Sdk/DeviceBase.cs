@@ -30,11 +30,32 @@ public static class DeviceEvents
     public const string DriverHeartbeat = "driver.heartbeat";
 
     /// <summary>
+    /// The driver saying it is deliberately waiting, and until when — see <see cref="DeviceBase.Hold"/>.
+    /// Like the heartbeat it is taken off the stream before the event bus sees it, so no rule can be
+    /// written against it and none fires because a bridge is waiting to be paired.
+    /// </summary>
+    public const string DriverHold = "driver.hold";
+
+    /// <summary>
     /// Whether an event is the hub talking to itself. These travel the same bus as real device events —
     /// that's how they prompt a re-read — so anything a user aimed at "any event" has to skip them, or a
     /// rule fires because a lamp finished describing itself.
     /// </summary>
-    public static bool IsInternal(string type) => type is CommandsChanged or TraitsChanged or ConfigLearned or DriverHeartbeat;
+    public static bool IsInternal(string type) =>
+        type is CommandsChanged or TraitsChanged or ConfigLearned or DriverHeartbeat or DriverHold;
+
+    /// <summary>
+    /// The data keys a <see cref="DriverHold"/> event carries. They exist because a device raises events
+    /// through one string-keyed channel; <c>DriverHost</c> lifts them straight back into the typed
+    /// <c>DriverHoldMessage</c> on the wire, so nothing string-shaped ever reaches the hub.
+    /// </summary>
+    public static class HoldKeys
+    {
+        public const string Id = "id";
+        public const string Reason = "reason";
+        public const string UntilUnixMs = "untilUnixMs";
+        public const string Released = "released";
+    }
 }
 
 /// <summary>Convenience base for devices: manages a state bag and event raising.</summary>
@@ -178,6 +199,57 @@ public abstract class DeviceBase : IRemaestroDevice
     {
         if (values.Count == 0) return;
         Emit(DeviceEvents.ConfigLearned, values);
+    }
+
+    /// <summary>
+    /// Say that this device is deliberately waiting, and roughly for how long. Returns a token; disposing
+    /// it — or letting a <c>using</c> scope end — releases the hold.
+    /// <para>
+    /// <b>What it buys.</b> The hub can see that a call has been outstanding for ten minutes; it cannot see
+    /// whether that is a wedge or a pairing wait for somebody to walk over and press a button. Only this
+    /// process knows, and without this it has no way to say. With it, the sentence in front of the user
+    /// stops being "ExecuteCommand unanswered for 10 min" and becomes what the wait is actually for.
+    /// </para>
+    /// <para>
+    /// <b>Release every hold, including the ones that failed.</b> The token does that on dispose and on a
+    /// throw, which is why it is a token and not a pair of methods: a hold left open is indistinguishable
+    /// from the wedge it existed to explain, so the field would end up hiding what it was added to reveal.
+    /// </para>
+    /// </summary>
+    /// <param name="reason">
+    /// One phrase, for whoever is looking at the screen — "waiting for the button on the bridge". It
+    /// replaces the hub's own sentence, so it has to say what the wait is <i>for</i>.
+    /// </param>
+    /// <param name="until">When the wait is expected to end, or null when that genuinely isn't knowable.</param>
+    protected IDisposable Hold(string reason, DateTimeOffset? until = null)
+    {
+        var id = $"{DeviceId}:{Interlocked.Increment(ref _holdSeq)}";
+        Emit(DeviceEvents.DriverHold, new Dictionary<string, string>
+        {
+            [DeviceEvents.HoldKeys.Id] = id,
+            [DeviceEvents.HoldKeys.Reason] = reason,
+            [DeviceEvents.HoldKeys.UntilUnixMs] = (until?.ToUnixTimeMilliseconds() ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture),
+        });
+        return new HoldToken(this, id);
+    }
+
+    int _holdSeq;
+
+    sealed class HoldToken(DeviceBase device, string id) : IDisposable
+    {
+        int _done;
+
+        public void Dispose()
+        {
+            // Idempotent: a `using` inside a retry loop, or a dispose after an explicit release, must not
+            // send a second end for a hold the hub has already closed.
+            if (Interlocked.Exchange(ref _done, 1) != 0) return;
+            device.Emit(DeviceEvents.DriverHold, new Dictionary<string, string>
+            {
+                [DeviceEvents.HoldKeys.Id] = id,
+                [DeviceEvents.HoldKeys.Released] = "true",
+            });
+        }
     }
 
     public abstract Task<CommandResult> ExecuteAsync(string commandId, IReadOnlyDictionary<string, string> args, CancellationToken ct);
