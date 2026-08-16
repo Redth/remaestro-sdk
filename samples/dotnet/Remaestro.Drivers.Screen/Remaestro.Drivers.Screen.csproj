@@ -1,6 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <ItemGroup>
+    <!-- Names a test project in the private reMaestro product repository, which consumes this repository as a
+         submodule and covers ScreenDevice (internal) directly. It has no effect on anything built from this
+         repository alone: an assembly that does not exist cannot see anything. -->
+    <InternalsVisibleTo Include="Remaestro.Drivers.Tests" />
+
     <PackageReference Include="System.IO.Ports" Version="10.0.0" />
     <ProjectReference Include="..\..\..\dotnet\src\Remaestro.Sdk\Remaestro.Sdk.csproj" />
   </ItemGroup>
