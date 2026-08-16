@@ -139,6 +139,14 @@ public sealed record LibraryNode
 /// <c>kind</c> is a <b>hint, never a switch on behaviour</b> — <c>IsContainer</c>, <c>IsPlayable</c> and the
 /// item's own commands decide what's actually possible.
 /// </para>
+/// <para>
+/// <b>Since <see cref="MediaTypeSpec"/> this list is the <i>routing</i> vocabulary rather than the whole
+/// one.</b> A driver may declare a kind of its own and have it drawn properly; what it may not do is invent
+/// something for <c>MediaPlayback.Kinds</c> to accept, because that list lives on devices somebody else
+/// wrote. So the two vocabularies are: <c>kind</c>, open, what a thing is; and this, closed, where a thing
+/// can go. <see cref="MediaTypeSpec.PlaysAs"/> is the single point they meet, and the only value the hub
+/// validates against <see cref="All"/>.
+/// </para>
 /// </summary>
 public static class NavKind
 {
@@ -241,6 +249,14 @@ public static class NodeShape
     /// <summary>Very wide, for a row of channel or network art.</summary>
     public const string Banner = "banner";
 
+    public static readonly IReadOnlyList<string> All = [Poster, Wide, Square, Banner];
+
+    /// <summary>
+    /// Whether the console has rules for this shape. Only these four do — a fifth draws at no aspect at
+    /// all — which is why <see cref="MediaTypeSpec.Shape"/> is checked against this before it is believed.
+    /// </summary>
+    public static bool IsKnown(string? shape) => shape is not null && All.Contains(shape);
+
     /// <summary>What a kind looks like when nobody said. Keeps drivers from having to state the obvious.</summary>
     public static string ForKind(string kind) => kind switch
     {
@@ -259,7 +275,64 @@ public static class NodeShape
 public sealed record ImageRef(string Kind, string Url, int Width = 0, int Height = 0, string? BlurHash = null, string Aspect = "");
 
 /// <summary>A per-node function. <c>Kind</c>: play | resume | queue | shuffle | toggle | open | custom.</summary>
-public sealed record ItemCommand(string Id, string Label, string Kind = "custom", IReadOnlyList<ConfigField>? Params = null);
+/// <param name="Icon">
+/// A glyph spec for the button — <c>ti:&lt;name&gt;</c>, passed through verbatim as every icon on this wire
+/// is. Blank keeps the console's own drawing, which knows <c>queue</c> and draws a play triangle for
+/// everything else, including every command a driver invents.
+/// </param>
+public sealed record ItemCommand(
+    string Id, string Label, string Kind = "custom", IReadOnlyList<ConfigField>? Params = null, string Icon = "");
+
+/// <summary>
+/// A kind of thing your library holds that the hub has never heard of — a recipe, a comic, an audiobook.
+/// Declared on the driver (<see cref="IRemaestroDriver.MediaTypes"/>), not on each node, so the hub can
+/// describe and route the type without your process running.
+///
+/// <para>
+/// <b><see cref="PlaysAs"/> is the field that does the work.</b> A device says what it will accept — a Kodi
+/// box names ten kinds, a Sonos two — and that list is an allow-list on the <i>destination</i> side, which
+/// no library can change. So an invented kind used to work only on the players that had never declared
+/// anything: a <c>recipe</c> leaf reached the destination list, came back empty, and drew a playable item
+/// with no buttons on it. <c>PlaysAs = NavKind.Video</c> says "route mine the way you route one of yours".
+/// </para>
+/// <para>
+/// <b>Two vocabularies, and this is the seam.</b> <see cref="Kind"/> is open — invent anything. <see
+/// cref="NavKind"/> is closed and is now the <i>routing</i> vocabulary: what <c>MediaPlayback.Kinds</c>
+/// names, what an activity says it can take. <see cref="PlaysAs"/> is the only place the two meet, and it
+/// is the only field here the hub checks: a value outside <see cref="NavKind.All"/> names a route nothing
+/// can take, so it is dropped and logged and the type stays browsable — no worse than not declaring.
+/// </para>
+/// <para>
+/// <b>You may invent a kind; you may not redefine one.</b> A declaration whose <see cref="Kind"/> is one of
+/// <see cref="NavKind"/>'s own is refused whole. Every device's accept-list was written against that
+/// vocabulary, so a plugin repainting <c>movie</c> would move where films go in a house it was never
+/// installed to touch.
+/// </para>
+/// </summary>
+/// <param name="Kind">The string you put in <see cref="LibraryNode.Kind"/>. Required.</param>
+/// <param name="Label">"Recipe". Blank title-cases the kind, which is what an undeclared kind already gets.</param>
+/// <param name="Icon">A glyph spec — <c>ti:&lt;name&gt;</c>. Blank falls back to the folder glyph.</param>
+/// <param name="Shape">See <see cref="NodeShape"/>. Blank falls back to poster, a 2:3 film card.</param>
+/// <param name="PlaysAs">A <see cref="NavKind"/> this routes like. Blank means "not playable", which is a real answer.</param>
+/// <param name="Facts">
+/// The metadata keys this type shows, as a display schema. <see cref="ConfigField"/> rather than a new
+/// grammar because it already carries key, label, type and — the one that earns its place —
+/// <c>Advanced</c>, which means "in the detail sheet, not as a chip".
+/// <para>
+/// Shown alongside the few the console already draws for everything (year, runtime, rating, genres); a key
+/// declared here replaces the console's own version rather than doubling it. Declaring nothing loses
+/// nothing. Values are shown as sent — metadata is a string map, so send "45 min" if that is what you want
+/// read; the console only reformats the keys whose meaning it defined.
+/// </para>
+/// </param>
+public sealed record MediaTypeSpec(
+    string Kind,
+    string Label = "",
+    string LabelPlural = "",
+    string Icon = "",
+    string Shape = "",
+    string PlaysAs = "",
+    IReadOnlyList<ConfigField>? Facts = null);
 
 /// <summary>
 /// The ids that arrive at <see cref="INavigableDevice.InvokeItemAsync"/>. Most of them are a node's own —

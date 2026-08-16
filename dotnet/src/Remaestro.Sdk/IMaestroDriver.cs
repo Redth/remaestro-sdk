@@ -53,6 +53,18 @@ public interface IRemaestroDriver
     IReadOnlyList<RemoteTemplateSpec> RemoteTemplates => [];
 
     /// <summary>
+    /// Kinds of thing your libraries hold that the hub has never heard of — a recipe, a comic, an
+    /// audiobook. See <see cref="MediaTypeSpec"/>, whose <c>PlaysAs</c> is what keeps an invented kind
+    /// playable; declaring nothing leaves every kind you emit exactly as it is today.
+    /// <para>
+    /// Declared on the driver rather than on each node so the hub can draw and route the type from its
+    /// cached descriptor, with your process stopped — the same arrangement as
+    /// <see cref="RemoteTemplates"/>, and for the same reason.
+    /// </para>
+    /// </summary>
+    IReadOnlyList<MediaTypeSpec> MediaTypes => [];
+
+    /// <summary>
     /// True when this type's devices implement <see cref="IRemoteSurfaceDevice"/> — each one draws the
     /// remote it deserves rather than sharing the type's.
     /// <para>

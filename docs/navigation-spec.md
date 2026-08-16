@@ -121,6 +121,69 @@ These moved into code because something started depending on them being spelled 
 `MediaPlayback` (§1.7) says which kinds a device will accept, and a kind spelled two ways matches nothing
 while looking entirely correct. It's the same failure the metadata keys had before `MediaFacts`.
 
+### 1.4.1 Declaring a kind of your own — `MediaTypeSpec`
+
+The list above is open and always was: put `recipe` in `kind` and nothing rejects it. What was missing is
+anywhere to say what `recipe` *means*, and the consequence was the sharpest single result of the media audit,
+because it runs backwards:
+
+> **The better-declared a house's playback devices are, the harder a new media kind fails.**
+
+`MediaPlayback.Kinds` (§1.7) is an **allow-list on the destination side**. A Kodi box names ten kinds and
+refuses the rest; a Sonos names two; a device that has never declared accepts anything. So an invented kind
+reached the destination list, matched nothing, and the Library page drew a playable item with **no buttons on
+it** — and it worked only on the players nobody had got round to declaring.
+
+A driver declares its own types on the descriptor, the way it already ships remote templates:
+
+```csharp
+public IReadOnlyList<MediaTypeSpec> MediaTypes { get; } =
+[
+    new("recipe", "Recipe", "Recipes", "ti:chef-hat", NodeShape.Square, PlaysAs: NavKind.Video,
+        Facts: [new("servings", "Serves"), new("cuisine", "Cuisine"), new("sourceUrl", "Source", Advanced: true)]),
+];
+```
+
+| Field | Means |
+|---|---|
+| `Kind` | The string you put in `LibraryNode.Kind`. Required. |
+| `Label` / `LabelPlural` | What to call one. Blank title-cases the kind — which is where `"Channel-list"` comes from. |
+| `Icon` | A glyph spec, `ti:<name>`, passed through verbatim. Blank is the folder glyph. |
+| `Shape` | §1.3. Blank is `poster`, a 2:3 film card, which is wrong for most new types. |
+| **`PlaysAs`** | **An existing `NavKind` this routes like.** Blank means not playable. |
+| `Facts` | The metadata keys this type shows, as `ConfigField[]` — §1.5.1. |
+
+**`PlaysAs` is the load-bearing field and the rest is decoration.** It is what makes "my recipe plays as a
+video" a thing a plugin can say without a hub release and without touching a single device driver: the hub
+asks the destination list about `video`, every declared player already accepts `video`, and the node keeps
+its own identity everywhere a person can see it.
+
+**Two vocabularies, and the seam is exactly one field.** `kind` stays open — invent anything. `NavKind` stops
+being the vocabulary and becomes the **routing** vocabulary: the closed set `MediaPlayback.Kinds`,
+`ActivityPlan.KindsItTakes` and the assistant's shelf words are written against. `PlaysAs` is where they
+meet, and it is the only value the hub validates.
+
+**What the hub refuses, and what it does instead.** All four are logged once, at the moment the driver is
+described, in the same voice a refused remote-template argument is:
+
+| | |
+|---|---|
+| A blank `kind` | The whole declaration is dropped — it names nothing, so it could never match. |
+| A `kind` that **is** a `NavKind` | Dropped. You may invent a kind; you may not redefine one. Every device's accept-list was written against that vocabulary, and a plugin repainting `movie` would move where films go in a house it was never installed to touch. |
+| A `PlaysAs` outside `NavKind.All` | **Only that field** is dropped; the type keeps its label, icon and shape. It names a route nothing can take, so honouring it would be worse than the undeclared behaviour it falls back to. |
+| A `Shape` outside §1.3 | Only that field is dropped; the shape falls back to the kind's default. |
+
+Each partial refusal leaves the type strictly no worse off than not declaring at all. That is the same rule a
+malformed remote template follows — the driver still loads, it just loses the remote.
+
+**Declared on the driver, not on the node.** A descriptor is cached, so a library renders from the mediator
+cache with its plugin stopped; and a type on the node would be repeated up to sixty times a page while still
+being undiscoverable until somebody had already browsed to one.
+
+**Adding one costs every cached descriptor once.** `DriverManifest.Contract()` hashes `DriverDescriptor` and
+everything it nests, so `media_types` moved that hash: on the release that carries it, every driver is
+re-introspected on the first start. Measured at ~45 s across forty-one drivers. Once, on that release only.
+
 ### 1.7 What a device can be handed to play
 
 A device declares `MediaPlayback` — the command that plays something, which of its parameters carries the
@@ -233,6 +296,27 @@ Note that `runtimeSeconds` and `year` are **not** repeated here — they describ
 defined above. Emitting a second key for the same thing is how Plex items ended up with no runtime showing
 in the console for months.
 
+#### 1.5.1 Keys of your own — the display schema
+
+Everything above is the shared vocabulary, and a key outside it has always been legal and always been
+**silently dropped**: the detail sheet draws six keys, all as string literals, and `myplugin:servings` never
+reaches a screen. A declared media type (§1.4.1) says which of its own keys to show, as `ConfigField[]` —
+the same record used for device config and command parameters, because it already carries key, label, type
+and `Advanced`, and `Advanced` means precisely "in the detail sheet, not as a chip".
+
+```csharp
+Facts: [new("servings", "Serves"), new("sourceUrl", "Source", Advanced: true)]
+```
+
+These are shown **alongside** the handful the console already draws for everything — year, runtime, official
+rating, community rating, genres — and a key you declare replaces the console's version of it rather than
+doubling it. So declaring nothing loses nothing, which is what lets a type declare a label and an icon and
+stop there.
+
+**Values are shown as sent.** `metadata` is a string map, so a driver that wants "45 min" rather than "2700"
+sends "45 min", under a key of its own. The console reformats only the keys whose meaning it defined, of
+which `runtimeSeconds` is the one that matters.
+
 ### 1.6 `ItemCommand`
 
 A function invocable on a node. Distinct from device commands (which are static per device type); item
@@ -244,6 +328,13 @@ commands are **per-node and dynamic**.
 | `label` | string | e.g. "Play", "Resume from 34:12", "Play on…". |
 | `kind` | string | `play` \| `resume` \| `queue` \| `shuffle` \| `toggle` \| `open` \| `custom` |
 | `params` | ConfigField[]? | Optional inputs (e.g. a target, a position). |
+| `icon` | string? | A glyph spec for the button, `ti:<name>`, passed through verbatim. Blank keeps the console's drawing, which knows `queue` and draws a **play triangle** for everything else — including `toggle`, `shuffle`, `open` and every id you invent. |
+
+**A command is dispatched by its `id`, never by its `kind`.** The console's card affordance used to send the
+literal `"resume"`/`"play"` — the *kind* — as a command id, which worked only because Jellyfin and Plex
+happen to name their ids identically to their kinds. A node offering `new ItemCommand("cook", "Cook", "play")`
+got a guaranteed error toast from its own primary button. Fixed; noted here because it is the shape of thing
+a driver author would otherwise have to discover.
 
 ### 1.6.1 Reserved command ids — `resolve`
 

@@ -93,6 +93,36 @@ public sealed partial class JellyfinDriver : IRemaestroDriver
     public bool SupportsNavigation => true;
 
     /// <summary>
+    /// The kinds this server holds that <see cref="NavKind"/> does not name. See
+    /// <see cref="MediaTypeSpec"/> and docs/navigation-spec.md §1.4.1.
+    /// <para>
+    /// <b>These are not hypothetical and they were already broken.</b> <c>Kind</c> below falls through to
+    /// Jellyfin's own type name for anything it doesn't map, so a server with an audiobook shelf or a music
+    /// video library has been emitting <c>audiobook</c>, <c>musicvideo</c> and <c>trailer</c> since this
+    /// driver was written — marked playable, drawn as a folder on a 2:3 film card, and offered
+    /// <i>nowhere</i> to play, because a Kodi box's accept-list names ten kinds and none of them is
+    /// <c>musicvideo</c>. <c>PlaysAs</c> is the whole fix: a music video routes as a video and reaches every
+    /// destination a film does.
+    /// </para>
+    /// <para>
+    /// <c>book</c> and <c>photoalbum</c> declare no <c>PlaysAs</c> on purpose. A book is not something this
+    /// driver can hand a player a URL for, and saying so leaves it visibly unroutable rather than offering a
+    /// Play button that fails — which is the same distinction <c>MediaPlayback.Nothing</c> draws for a device.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<MediaTypeSpec> MediaTypes { get; } =
+    [
+        new("audiobook", "Audiobook", "Audiobooks", "ti:headphones", NodeShape.Square, NavKind.Track,
+            [new(MediaFacts.Artists, "Author")]),
+        new("musicvideo", "Music video", "Music videos", "ti:video", NodeShape.Wide, NavKind.Video,
+            [new(MediaFacts.Artists, "Artist")]),
+        new("trailer", "Trailer", "Trailers", "ti:movie", NodeShape.Poster, NavKind.Video),
+        new("book", "Book", "Books", "ti:book", NodeShape.Poster,
+            Facts: [new(MediaFacts.Artists, "Author")]),
+        new("photoalbum", "Photo album", "Photo albums", "ti:photo", NodeShape.Wide),
+    ];
+
+    /// <summary>
     /// What this driver implements — see <see cref="DriverCapability"/>. Only "diagnostics" is listed even
     /// though this driver also has navigation: the three <c>Supports*</c> booleans are folded into the
     /// descriptor's capability list by <c>DriverHost</c>, so repeating "navigation" here would be a second

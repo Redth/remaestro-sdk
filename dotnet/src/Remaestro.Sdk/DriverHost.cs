@@ -80,6 +80,7 @@ public sealed class DriverServiceImpl : Driver.DriverBase
         d.StateSchema.AddRange(_driver.StateSchema.Select(ToProto));
         d.DiscoveryServices.AddRange(_driver.DiscoveryServices);
         d.RemoteTemplates.AddRange(_driver.RemoteTemplates.Select(ToProto));
+        d.MediaTypes.AddRange(_driver.MediaTypes.Select(ToProto));
         return Task.FromResult(d);
     }
 
@@ -249,6 +250,22 @@ public sealed class DriverServiceImpl : Driver.DriverBase
             // distinction to a hub too old to read the enum.
             return new BridgedDeviceListMessage { Supported = true, Availability = Availability.Unavailable };
         }
+    }
+
+    /// <summary>
+    /// A declared media type, sent verbatim. Nothing is validated here on purpose: the hub is the party
+    /// that has to refuse a bad <c>PlaysAs</c> or a redefined <c>NavKind</c>, because a plugin written in
+    /// any other language never passes through this method and the two ends must refuse identically.
+    /// </summary>
+    static MediaTypeMessage ToProto(MediaTypeSpec t)
+    {
+        var m = new MediaTypeMessage
+        {
+            Kind = t.Kind, Label = t.Label, LabelPlural = t.LabelPlural,
+            Icon = t.Icon, Shape = t.Shape, PlaysAs = t.PlaysAs,
+        };
+        if (t.Facts is not null) m.Facts.AddRange(t.Facts.Select(ToProto));
+        return m;
     }
 
     static RemoteTemplateMessage ToProto(RemoteTemplateSpec t)
@@ -610,7 +627,7 @@ public sealed class DriverServiceImpl : Driver.DriverBase
         }));
         foreach (var c in n.Commands)
         {
-            var cm = new ItemCommandMessage { Id = c.Id, Label = c.Label, Kind = c.Kind };
+            var cm = new ItemCommandMessage { Id = c.Id, Label = c.Label, Kind = c.Kind, Icon = c.Icon };
             if (c.Params is not null) cm.Params.AddRange(c.Params.Select(ToProto));
             msg.Commands.Add(cm);
         }

@@ -177,6 +177,75 @@ message DriverDescriptor {
   // will call, and NavigationService has no catch at all around Browse and SearchNodes, so the user gets
   // an error rather than a graceful degrade. Declare what you implement.
   repeated string capabilities = 16;
+
+  // The kinds of thing this driver's libraries hold that the hub has never heard of — a recipe, a comic,
+  // an audiobook. See MediaTypeMessage and docs/navigation-spec.md §1.4.1.
+  //
+  // On the descriptor rather than on each node, for the same reason remote_templates is: the hub caches a
+  // descriptor and can therefore describe a library whose plugin is not running, and a type repeated on
+  // sixty nodes a page would still be undiscoverable until somebody had already browsed to one.
+  repeated MediaTypeMessage media_types = 17;
+}
+
+// A media type a plugin invents, declared so the hub can route it and draw it.
+//
+// **`plays_as` is the field that does the work, and the rest is decoration.** MediaPlaybackInfo.kinds is an
+// allow-list on the *destination* side: a Kodi box names ten kinds it will accept and refuses everything
+// else, and no plugin can change what that box declares. So before this message existed, the better
+// declared a house's players were, the harder an invented kind failed — a `recipe` leaf reached the
+// destination list and came back empty, and the Library page drew a playable item with no buttons on it.
+// `plays_as: "video"` says "route mine the way you route one of yours", and every existing destination
+// keeps working untouched.
+//
+// The vocabulary split this creates is deliberate and is the honest cost. `kind` stays open: anything may
+// appear there, this message only says what the open value *means*. NavKind — the closed set in the SDK —
+// stops being the vocabulary and becomes the **routing** vocabulary, the one MediaPlaybackInfo.kinds and
+// the hub's activity screens are written against. `plays_as` is the seam between the two, and it is the one
+// field here the hub validates: a value outside NavKind names a route nothing can take, so the hub drops it
+// and logs, leaving the type browsable exactly as an undeclared one is today.
+//
+// A declaration may **invent** a kind and may not **redefine** one. Sending `kind: "movie"` is refused
+// whole, because the routing vocabulary is what every device's accept-list was written against and a
+// plugin repainting it would change where films go in a house it was never installed to touch.
+message MediaTypeMessage {
+  // The string that appears in LibraryNodeMessage.kind. Required; a type that names nothing matches
+  // nothing. Must not be one of NavKind's own values — see above.
+  string kind = 1;
+
+  // What to call one of these on screen, e.g. "Recipe". Blank falls back to the title-cased kind, which is
+  // what the hub does for an undeclared kind and is wrong for exactly the cases a label is for
+  // ("Channel-list").
+  string label = 2;
+  string label_plural = 3;
+
+  // A Glyph spec — `ti:<name>` for one of the console's bundled Tabler icons. Passed through verbatim, so
+  // an unrecognised spec draws as literal text: a visibly wrong icon beats a silently empty one, which is
+  // the same reasoning as RemoteTemplateMessage.icon. Blank falls back to the folder glyph.
+  string icon = 4;
+
+  // poster | wide | square | banner — the shape a card of this kind is drawn at when neither the item nor
+  // the page said. Blank falls back to poster, which is a 2:3 film card and is wrong for most new types.
+  string shape = 5;
+
+  // An existing NavKind this routes like: "video", "track", "photo". Blank means this type is not
+  // playable, which is a real answer — a `book` a plugin cannot hand out a URL for should say so rather
+  // than offer a Play button that fails.
+  string plays_as = 6;
+
+  // The metadata keys this type carries, as a display schema. ConfigField rather than a new grammar
+  // because it already says key, label, type, options, show_when and — the one that earns its place —
+  // `advanced`, which maps exactly onto "show this in the detail sheet, not as a chip".
+  //
+  // These are shown *alongside* the handful the console already knows how to draw (year, runtime, rating,
+  // genres), and a key declared here replaces the console's own version of it rather than doubling it. So
+  // declaring nothing loses nothing, which is what lets a type declare a label and an icon and stop.
+  //
+  // Keys not listed here are still carried in LibraryNodeMessage.metadata and are still dropped by the UI,
+  // exactly as they are today. This is what a type shows, not what it may send. Values are shown as sent —
+  // metadata is a string map, so a driver that wants "45 min" rather than "2700" sends "45 min", in a key
+  // of its own. The console only reformats keys it defined the meaning of, `runtimeSeconds` being the one
+  // that matters.
+  repeated ConfigField facts = 7;
 }
 
 // Why an optional answer is not an answer. Carried alongside `supported` on every rpc that has one.
@@ -728,6 +797,14 @@ message ItemCommandMessage {
   string label = 2;
   string kind = 3;
   repeated ConfigField params = 4;
+
+  // A Glyph spec for this command's button, passed through verbatim like every other icon on this wire.
+  // Blank keeps the hub's own drawing, which has a case for `queue` and draws a play triangle for
+  // everything else — including `toggle`, `shuffle`, `open`, and every command a plugin invents.
+  //
+  // Note where this field is: on the node, not on the descriptor, so it costs no descriptor
+  // re-introspection. `DriverManifest.Contract()` hashes only what DriverDescriptor can reach.
+  string icon = 5;
 }
 
 // --- Diagnostics ---------------------------------------------------------------------------------------

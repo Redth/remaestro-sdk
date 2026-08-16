@@ -219,7 +219,7 @@ AI tools with `acts`/`surfaces`; generalised `ConfigField`; the `/plugins/{id}` 
 
 ---
 
-## 4. The one that is backwards, and needs a decision inside Phase 6
+## 4. The one that is backwards, and the decision Phase 6 took
 
 From the media audit, and it is the sharpest single finding in the set:
 
@@ -229,6 +229,17 @@ From the media audit, and it is the sharpest single finding in the set:
 Kodi declares 10 kinds, Sonos 2. So a plugin inventing a media kind works *only* on drivers that have not
 done their homework, and a playable leaf with no destination renders **zero buttons**. That is exactly
 backwards, and it directly threatens the user's standing constraint that media items stay playable.
+
+**Settled by `#268`, and the decision was the smaller of the two available.** The allow-list is untouched:
+no device driver changed, `MediaPlayback.Accepts` is the same method, and nothing below the routing boundary
+has heard of a media type. What changed is that a driver may now *declare* its kind on the descriptor with a
+`plays_as`, and the hub asks the destination list about that instead — so `recipe` plays as `video` and
+reaches every box that already accepts one.
+
+The alternative, widening the allow-list so an undeclared kind is accepted by default, would have made
+`kinds` mean nothing and put a film back on a Sonos. The cost of the route taken is **two vocabularies where
+there was one**: `kind` open and `NavKind` closed, meeting at `plays_as` and nowhere else. A driver may
+invent a kind and may not redefine one. See `docs/navigation-spec.md` §1.4.1.
 
 ---
 
