@@ -444,6 +444,32 @@ message SearchNodesRequest {
 message InvokeItemRequest {
   string device_id = 1;
   string node_id = 2;
+
+  // Normally one of the ids this node listed in LibraryNodeMessage.commands — your own vocabulary, which
+  // only you have to understand.
+  //
+  // RESERVED IDS. The hub also sends these, and a node never advertises them, so a driver that switches on
+  // its own command list will not recognise one. There is exactly one today:
+  //
+  //   "resolve" — "what is this item, and where does it stream from?" A question. Answer it in
+  //   ExecuteCommandResponse.result: at minimum `streamUrl` and `mediaType` for anything playable, plus
+  //   `title` and `positionSeconds` where you have them. Then stop.
+  //
+  //     MUST NOT emit library.play, library.queue, or any other event that routes playback.
+  //     MUST NOT start playback anywhere, on the server or on a client.
+  //     MUST NOT leave state behind that a second resolve would see differently.
+  //
+  //   The caller is going to route the answer itself — it starts an activity with it, or hands the URL to a
+  //   box in another room. An event announcing the resolve fires every redirect rule the user has written
+  //   against this source, and the caller then routes it a second time: one press, two playbacks, the first
+  //   one wherever the rule points rather than where the person asked. Two of the three drivers in this
+  //   repo did that for months, because this paragraph did not exist.
+  //
+  //   Do not implement it and the honest failure is a failed CommandResult, which the hub reports as
+  //   "couldn't work out how to play that" — the item is unplayable through the hub's routing, and visibly
+  //   so. That is the correct answer for a library that cannot hand out a URL.
+  //
+  // See docs/navigation-spec.md §1.6.1.
   string command_id = 3;
   map<string, string> args = 4;
 }

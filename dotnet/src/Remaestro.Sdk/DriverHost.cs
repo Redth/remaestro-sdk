@@ -493,7 +493,7 @@ public sealed class DriverServiceImpl : Driver.DriverBase
     {
         var nav = Nav(request.DeviceId) ?? throw new RpcException(new Status(StatusCode.Unimplemented, "Device is not navigable."));
         var opts = new BrowseOptions(request.Offset, request.Limit <= 0 ? 100 : request.Limit);
-        var listing = await nav.SearchAsync(request.Query, opts, Token(context));
+        var listing = await nav.SearchNodesAsync(request.Query, opts, Token(context));
         return ToProto(listing);
     }
 

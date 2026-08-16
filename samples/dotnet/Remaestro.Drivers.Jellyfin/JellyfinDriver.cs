@@ -617,7 +617,11 @@ internal sealed class JellyfinDevice : DeviceBase, INavigableDevice
         return MapItem(doc.RootElement);
     }
 
-    public async Task<NodeListing> SearchAsync(string query, BrowseOptions options, CancellationToken ct)
+    /// <summary>
+    /// Named for the rpc it answers (<c>SearchNodes</c>) rather than for the word "search", which this class
+    /// also uses for its own <c>search</c> command — the two used to be overloads of one name.
+    /// </summary>
+    public async Task<NodeListing> SearchNodesAsync(string query, BrowseOptions options, CancellationToken ct)
     {
         var uid = await UserIdAsync(ct);
         var url = $"{_server}/Users/{uid}/Items?searchTerm={Uri.EscapeDataString(query)}&Recursive=true" +
@@ -639,13 +643,17 @@ internal sealed class JellyfinDevice : DeviceBase, INavigableDevice
             ["title"] = node.Title,
             ["streamUrl"] = stream,
             ["mediaType"] = node.Metadata.GetValueOrDefault("mediaType", "Video"),
-            ["positionSeconds"] = commandId == "resume" ? pos : "0"
+            ["positionSeconds"] = commandId == NavItemCommand.Resume ? pos : "0"
         };
 
         // "resolve" just hands back the media info (for a parameterized activity to consume); play/queue
         // additionally emit an event so a rule can route playback — policy stays outside the driver.
-        if (commandId != "resolve")
-            Emit(commandId == "queue" ? "library.queue" : "library.play", data);
+        //
+        // This driver has always been right about that, and was the only one: the rule lived in this comment
+        // rather than anywhere a second author could read it. It now goes through NavItemCommand, so the
+        // reference implementation and the contract are the same line of code.
+        if (!NavItemCommand.IsQuery(commandId))
+            Emit(commandId == NavItemCommand.Queue ? "library.queue" : "library.play", data);
         return CommandResult.Success(data);
     }
 
@@ -983,7 +991,9 @@ internal sealed class JellyfinDevice : DeviceBase, INavigableDevice
         "movie" => Join(m.GetValueOrDefault("year"), Runtime(m)),
         "episode" => MediaFacts.EpisodeCode(m)?.Replace("E", "·E") ?? Runtime(m),
         "season" => m.TryGetValue(MediaFacts.SeasonNumber, out var s) ? $"Season {s}" : (m.TryGetValue("childCount", out var c) ? $"{c} episodes" : null),
-        "series" => Join(m.GetValueOrDefault("year"), m.GetValueOrDefault("status")),
+        // MediaFacts.SeriesStatus, which is what MapItem writes. This read "status" and so silently found
+        // nothing: every series subtitle was its year alone, never "2022 · Ended".
+        "series" => Join(m.GetValueOrDefault("year"), m.GetValueOrDefault(MediaFacts.SeriesStatus)),
         _ => m.TryGetValue("childCount", out var c) ? $"{c} items" : null
     };
     static string? Runtime(IReadOnlyDictionary<string, string> m) => m.TryGetValue("runtimeSeconds", out var r) && int.TryParse(r, out var s) && s > 0 ? $"{s / 60}m" : null;

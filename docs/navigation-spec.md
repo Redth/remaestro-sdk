@@ -245,6 +245,62 @@ commands are **per-node and dynamic**.
 | `kind` | string | `play` \| `resume` \| `queue` \| `shuffle` \| `toggle` \| `open` \| `custom` |
 | `params` | ConfigField[]? | Optional inputs (e.g. a target, a position). |
 
+### 1.6.1 Reserved command ids — `resolve`
+
+Everything in §1.6 is a node's *own* vocabulary: the driver invents the ids, lists them on the node, and is
+the only thing that has to understand them. **Reserved ids are the exception — the hub sends them, and no
+node ever advertises them.** There is one today.
+
+| Id | Means | Advertised on a node? |
+|---|---|---|
+| `resolve` | "What is this item, and where does it stream from?" | **No.** The hub sends it regardless. |
+
+`resolve` is a **question**. It exists because the hub, not the driver, decides where something plays: the
+Library page's "Play on…", `POST /api/nav/{deviceId}/play-with-activity`, and the assistant's `play_media`
+all ask the source what an item is, then route the answer themselves — into an activity that sets a room up,
+or straight at a box in another room. See `Library.razor`, `ApiEndpoints.cs`, `AssistantTools.cs`.
+
+**What a driver must return.** The media facts, in `CommandResult`'s result map: at minimum `streamUrl` and
+`mediaType` for anything playable, plus `title` and `positionSeconds` where they exist. The key spellings are
+the ones in §1.5 and in `MediaMeta`; the caller reads them by name.
+
+**What a driver must *not* do — the part that is the whole reason this section exists:**
+
+- **Emit no event.** Not `library.play`, not `library.queue`, not any other event that a rule could route.
+- **Start no playback**, on the server or on any client it can reach.
+- **Change nothing** a second `resolve` would see differently. It is safe to call twice, and callers do.
+
+That is not fussiness about purity. §4's redirect pattern means a `library.play` from a source *is* a
+playback instruction to every rule the user has written against it. A driver that announces a resolve
+therefore plays the item **once via the rule** — wherever that rule points — and the caller then plays it
+**again** at the destination the person actually asked for. One press, two playbacks, and the wrong one
+first.
+
+The worst case is not the duplicate, it is the **denial**. Every caller resolves *before* it asks the
+activity gate, so when the gate refuses — the room is already in use — the person is told "the activity
+wouldn't start" while the phantom has already put the film on somewhere else. Spoken, that is an assistant
+saying nothing happened, in a room where something did. `PlexDriver` and `HdHomeRunDriver` did exactly this
+from the day each was written, because this section did not exist and only `JellyfinDriver` had guessed
+right.
+
+**If you don't support it**, fail the command. `CommandResult.Fail` is reported to the user as "couldn't work
+out how to play that", and the item is then visibly unroutable rather than invisibly mis-routed. **Do not let
+an unrecognised id fall through to your play branch** — a `default:` that plays is how both drivers above
+got it wrong, and it is why the id is named here rather than left to convention.
+
+The SDK spells it `NavItemCommand.Resolve`, with `NavItemCommand.IsQuery(commandId)` as the guard to put in
+front of an `Emit`. On the wire it is an ordinary `InvokeItem` with `command_id = "resolve"`
+(`driver.proto`, `InvokeItemRequest.command_id`).
+
+**What this section is worth, stated honestly.** It is prose, and prose is all that stands between a new
+driver and the bug above: `resolve` arrives through the same method as `play`, so an `InvokeItem` whose
+`default:` branch plays will play — and the hub cannot tell that apart from a driver that resolved
+correctly and routed as well. A dedicated method would make the guarantee structural instead, because a
+resolve could not reach a play branch at all, and a driver that had never implemented it would say so in
+the protocol's own words rather than by doing the wrong thing quietly. That is a change to the wire
+contract and is not made here. Until it is, **the guarantee is only as good as this page** — which is why
+the rule above is written with its consequence attached rather than as a bare MUST NOT.
+
 ---
 
 ## 2. API — what a driver implements
@@ -262,8 +318,10 @@ public interface INavigableDevice
     // Full detail for one node (metadata, assets, commands, maybe related).
     Task<LibraryNode?> GetNodeAsync(string nodeId, CancellationToken ct);
 
-    // Optional search across the library.
-    Task<NodeListing> SearchAsync(string query, BrowseOptions options, CancellationToken ct);
+    // Search across the library. Required, and named for its rpc (SearchNodes) like the two above.
+    // A library that can't be searched returns an empty listing itself and says so in a comment:
+    // this had a default doing that invisibly, and HDHomeRun inherited it by misspelling the name.
+    Task<NodeListing> SearchNodesAsync(string query, BrowseOptions options, CancellationToken ct);
 
     // Invoke a per-item command. Returns a result AND (by convention) emits an event for rules (§4).
     Task<CommandResult> InvokeItemAsync(string nodeId, string commandId,
@@ -355,7 +413,12 @@ Recommended standard events: `library.play`, `library.queue`, `library.resume`, 
 - **Images must be hub-reachable.** If the backend needs auth, either embed a token in the URL or expose a
   proxy route; the UI just does `<img src>`.
 - **Playables resolve at invoke time.** Don't put stream URLs in `Browse` payloads (they expire / are big).
-  Resolve on `InvokeItem`/`GetNode`, and hand them back via the event + `CommandResult`.
+  Resolve on `InvokeItem`/`GetNode`, and hand them back via the event + `CommandResult`. This is also why
+  `resolve` (§1.6.1) is its own command rather than being folded into `GetNode`: a detail sheet can sit open
+  for minutes before anyone presses Play, and a URL fetched to draw it would be stale by then.
+- **An item command either does something or answers something, never both.** The reserved `resolve`
+  (§1.6.1) answers; everything else does. Guard the `Emit` in `InvokeItemAsync` with
+  `NavItemCommand.IsQuery`, and never let an id you don't recognise reach your play branch.
 - **Control leaves** (HA light/switch) use `toggle`/`custom` commands and carry live state in `metadata`;
   they're the same projection, just not "playable".
 - **Capability discovery.** `supports_navigation` on the descriptor + `isContainer`/`isPlayable`/`commands`

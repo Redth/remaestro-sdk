@@ -14,13 +14,46 @@ public interface INavigableDevice
     /// <summary>Full detail for one node (metadata, assets, commands).</summary>
     Task<LibraryNode?> GetNodeAsync(string nodeId, CancellationToken ct);
 
-    /// <summary>Search the library. Return an empty listing if unsupported.</summary>
-    Task<NodeListing> SearchAsync(string query, BrowseOptions options, CancellationToken ct)
-        => Task.FromResult(new NodeListing());
+    /// <summary>
+    /// Search the library. A library that genuinely can't be searched still implements this and returns an
+    /// empty listing — deliberately, in one line, with a comment saying so.
+    /// <para>
+    /// <b>There is no default implementation, on purpose.</b> There was one — <c>Task.FromResult(new
+    /// NodeListing())</c> — and it cost HDHomeRun its search for the driver's whole existence: that driver
+    /// spelled its override <c>SearchNodesAsync</c> while the member was called <c>SearchAsync</c>, so the
+    /// misspelling compiled as an ordinary extra method, the default won, and every channel search answered
+    /// "searched, found nothing" with no error anywhere. The rule it leaves behind, which the SDK's other
+    /// ten defaults already keep: <b>a default interface member may state a negative — "this driver declares
+    /// no events", "this device is not navigable" — but never a result.</b> "Found nothing" is a result, and
+    /// only the driver is in a position to give it.
+    /// </para>
+    /// <para>
+    /// Note which way the surprise ran: over the raw wire this case is <i>louder</i>, because an
+    /// unimplemented rpc answers <c>UNIMPLEMENTED</c> and the hub shows the error. The C# convenience
+    /// invented a silent failure the protocol itself does not have.
+    /// </para>
+    /// <para>
+    /// <b>And the name is the proto's, plus the suffix .NET asks for.</b> Every member here is now
+    /// <c>&lt;rpc name&gt;</c> + <c>Async</c> — <c>Browse</c>→<c>BrowseAsync</c>,
+    /// <c>GetNode</c>→<c>GetNodeAsync</c>, <c>SearchNodes</c>→<c>SearchNodesAsync</c>
+    /// (<c>driver.proto:47-49</c>). It used to be <c>SearchAsync</c>, the one member that dropped a word
+    /// from its own rpc — and that is exactly the name the HDHomeRun author wrote instead, because they
+    /// wrote what the wire says. An SDK generated for any other language carries the proto's names and
+    /// cannot be talked out of them, so leaving the divergence would have made it permanent the moment a
+    /// second language existed, while renaming costs three call sites today.
+    /// </para>
+    /// </summary>
+    Task<NodeListing> SearchNodesAsync(string query, BrowseOptions options, CancellationToken ct);
 
     /// <summary>
     /// Invoke a per-item command (play/queue/toggle…). Returns a result and, by convention, emits an event
     /// (e.g. <c>library.play</c>) so rules can route the effect (see the spec's redirect pattern).
+    /// <para>
+    /// <b>Except for <see cref="NavItemCommand.Resolve"/>, which emits nothing.</b> It is a question the hub
+    /// asks — what is this item, where does it stream from — and the hub routes the answer itself. Guard the
+    /// <c>Emit</c> with <see cref="NavItemCommand.IsQuery"/>, and never let an id you don't recognise fall
+    /// through to your play branch: that is not "unsupported", it is a second playback nobody asked for.
+    /// </para>
     /// </summary>
     Task<CommandResult> InvokeItemAsync(string nodeId, string commandId, IReadOnlyDictionary<string, string> args, CancellationToken ct);
 }
@@ -227,3 +260,59 @@ public sealed record ImageRef(string Kind, string Url, int Width = 0, int Height
 
 /// <summary>A per-node function. <c>Kind</c>: play | resume | queue | shuffle | toggle | open | custom.</summary>
 public sealed record ItemCommand(string Id, string Label, string Kind = "custom", IReadOnlyList<ConfigField>? Params = null);
+
+/// <summary>
+/// The ids that arrive at <see cref="INavigableDevice.InvokeItemAsync"/>. Most of them are a node's own —
+/// whatever it listed in <see cref="LibraryNode.Commands"/>, which the driver invented and the driver
+/// understands. <b><c>Resolve</c> is not one of those</b>: it is reserved, the hub sends it, and no node
+/// ever offers it.
+/// <para>
+/// That asymmetry is the whole reason this class exists. <c>resolve</c> was load-bearing in three hub call
+/// sites — the Library page's "Play on…", <c>/api/nav/{id}/play-with-activity</c>, and the assistant's
+/// <c>play_media</c> — while being written down in no proto, no spec and no interface. Two of the three
+/// drivers that had to answer it had never heard of it, so it fell through to their play branch and a
+/// <i>question</i> about an item announced itself as a <i>press</i>. See <c>docs/navigation-spec.md</c> §1.6.1.
+/// </para>
+/// </summary>
+public static class NavItemCommand
+{
+    // ---- The ones a node advertises (see ItemCommand.Kind) ---------------------------------------------
+
+    public const string Play = "play";
+    public const string Resume = "resume";
+    public const string Queue = "queue";
+    public const string Shuffle = "shuffle";
+    public const string Toggle = "toggle";
+    public const string Open = "open";
+
+    // ---- Reserved: the hub sends these whether or not a node lists them ---------------------------------
+
+    /// <summary>
+    /// "What is this item, and where does it stream from?" — a question, answered and nothing more.
+    /// <para>
+    /// The caller is going to route the answer itself: start an activity with it, or hand the URL to a box
+    /// in another room. A driver answering this <b>must not</b> emit <c>library.play</c>, <c>library.queue</c>
+    /// or any other routing event, must not start playback anywhere, and must leave nothing behind that a
+    /// second resolve would see differently. Return the facts — at minimum <c>streamUrl</c> and
+    /// <c>mediaType</c> for anything playable — in the <c>CommandResult</c>.
+    /// </para>
+    /// <para>
+    /// The failure this forbids is not theoretical and it is not visible: the stray event fires every
+    /// redirect rule the user has written against that source, and <i>then</i> the caller starts the
+    /// activity as well. One press, two routings, and the first one goes wherever the rule says rather than
+    /// where the person asked.
+    /// </para>
+    /// </summary>
+    public const string Resolve = "resolve";
+
+    /// <summary>
+    /// Whether this id asks a question rather than doing something — the guard to put in front of an
+    /// <c>Emit</c> in <see cref="INavigableDevice.InvokeItemAsync"/>.
+    /// <para>
+    /// Written as a call rather than as <c>commandId != "resolve"</c> at each site so that a second reserved
+    /// query, if there is ever one, does not need three drivers to be found and edited again — which is the
+    /// way this one was missed.
+    /// </para>
+    /// </summary>
+    public static bool IsQuery(string commandId) => commandId == Resolve;
+}
