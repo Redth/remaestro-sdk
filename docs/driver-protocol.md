@@ -52,10 +52,15 @@ drifts away from the file it came from.
 
 ### 2.2 One integer, two places, on purpose
 
-The registry manifest — `plugin.json` — carries a single integer called `abi`. **It is the same number as
-`protocol_version`.** Two integers that could disagree would mean a plugin that installs and will not run,
-or, worse, one that runs having claimed it would not. The manifest's job is to refuse a download; the
-descriptor's job is to refuse a launch; they answer the same question at two moments.
+A packaged plugin carries a single integer called `abi`. **It is the same number as `protocol_version`.**
+Two integers that could disagree would mean a plugin that installs and will not run, or, worse, one that
+runs having claimed it would not. The manifest's job is to refuse an install; the descriptor's job is to
+refuse a launch; they answer the same question at two moments.
+
+**Two files carry it, and they are both called `plugin.json`.** The one inside the archive — §6, and the
+only one a hub ever reads — and the registry submission, which lists every version and never comes near a
+box. The registry's CI refuses an archive whose `abi` is not the one its submission published. Where this
+page says "the manifest" without qualifying it, it means the one in §6.
 
 The manifest carries no floor. That is not an omission and does not need fixing: **an undeclared floor
 reads as `abi`**, which is exactly what unset `min_hub_protocol` means here. A floor can therefore only ever
@@ -295,3 +300,79 @@ launch — with a note at each step that cost more than the line here suggests.
       hand and stopped one short of `hex`. Blot the payload **before** you truncate it for rendering — half
       a password is a shorter password, not a redacted one. `samples/python/lamp/diag.py` is the worked
       example.
+- [ ] Ship a `plugin.json` that validates against
+      [`plugin-manifest.schema.json`](plugin-manifest.schema.json) — §6.
+
+---
+
+## 6. The manifest inside the archive
+
+A plugin is a gzipped tar with a **`plugin.json` at its root**. That file is the only thing the hub reads to
+learn what to run, and it is checked against
+[**`docs/plugin-manifest.schema.json`**](plugin-manifest.schema.json), which is normative: every field, what
+it means, and what the hub does with it is written there rather than here, so that there is one copy of it.
+
+```jsonc
+{
+  "id": "com.example.lamp", "version": "1.0.0", "abi": 1,
+  "kind": "driver", "runtime": "python3", "rid": "linux-arm64",
+  "exec": ["python3", "main.py"]
+}
+```
+
+`samples/python/package.sh` writes exactly that file, and is the worked example of everything below.
+
+### 6.1 Two files, one name
+
+There is a second `plugin.json` — the **registry submission**, one per plugin, listing every version and
+every architecture, at `plugins/<id>/plugin.json` in the extensions registry. It has its own schema, its own
+required fields, and **the opposite rule about unknown fields**: it refuses one, because a field the registry
+cannot check is a claim a human reviewer is about to read. This one **ignores** unknown fields, because a hub
+too old to know a field must still run a plugin carrying one — otherwise every field ever added is a flag day
+for every box in the field.
+
+The registry's CI reads the manifest out of your archive and refuses the submission if the two disagree on
+`id`, `version`, `abi` or `rid`. Nothing on a hub can do that check, because a hub only ever has one of the
+two files.
+
+### 6.2 What launching it means
+
+| | |
+|---|---|
+| Program | `exec[0]` — resolved against the package root if a file of that name is in it, otherwise left for the OS to find on `PATH` |
+| Arguments | `exec[1..]`, passed as argv. Nothing is parsed and nothing needs quoting |
+| Working directory | **the package root** |
+| Address to serve on | `REMAESTRO_DRIVER_URL`, and `ASPNETCORE_URLS` with the same value |
+
+**The working directory is the one that catches people**, because the hub used to pass its own and a .NET
+driver never noticed — `AppContext.BaseDirectory` does not care. Anything resolving a path relative to itself
+does.
+
+`REMAESTRO_DRIVER_URL` and `ASPNETCORE_URLS` are two names for one fact rather than a migration: every driver
+in the field reads the second, and nobody writing Go should have to read a variable named after a .NET web
+framework to learn which port they were given.
+
+### 6.3 Where the hub is more forgiving than this schema
+
+The schema describes a manifest that is *correct*. The hub's parser is deliberately looser, so that it never
+refuses a file it could have understood — and the looseness is worth knowing about, because in two places it
+means your plugin runs having quietly said something you did not mean:
+
+- **`abi` absent, or present but not an integer** — `"abi": "1"` is a string — reads as **0**, silently. The
+  only `abi` check is *newer than this hub's protocol*, so 0 is never refused: your plugin runs with its
+  install-time compatibility check switched off, having declared nothing. **This is the one on the list that
+  costs you something**, and the registry is what catches it; a hub installing from a URL does not.
+- **`kind` is compared case-insensitively**, so `"Driver"` runs. The schema names only `driver` because that
+  is what to write.
+- **`rid` empty** reads the same as absent — "runs anywhere".
+- **`exec` entries that are empty or are not strings are dropped**, rather than making the manifest invalid.
+  The manifest is only refused if nothing usable is left. The registry's CI is stricter and requires every
+  element to be a non-empty string, so a manifest relying on this will pass a hub and fail a submission.
+- **Unknown fields are ignored** — §6.1, and that one is not looseness but the rule.
+
+Two things the schema and the hub agree on, listed here because they read like looseness and are not:
+**`kind` absent** means `driver` and **`rid` absent** means "runs anywhere". Both are defaults, both are in
+the schema, and saying either explicitly is what stops *we forgot* looking like *we decided*.
+
+None of the looseness above is a promise to keep being true, and the registry refuses most of it. Validate
+against the schema.

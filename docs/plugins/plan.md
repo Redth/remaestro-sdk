@@ -6,8 +6,8 @@ between them) into a phase order, plus the decisions the user took while they ra
 
 Read the audits for evidence. This page is only for *what to do, in what order, and why that order*.
 
-> **A note for readers of the public repository.** This page is published as-is, unedited, because a
-> roadmap that has been sanded down is not worth reading. Two consequences:
+> **A note for readers of the public repository.** This page is published essentially unedited, because a
+> roadmap that has been sanded down is not worth reading. Three consequences:
 >
 > - **The five audits it cites are not published.** They are internal engineering notes that walk the hub's
 >   source line by line, and most of what they say would be unreadable without it. Where this page cites one,
@@ -15,10 +15,13 @@ Read the audits for evidence. This page is only for *what to do, in what order, 
 > - **`#nnn` is an issue in a private tracker**, and file paths like `src/Remaestro.Hub/…`,
 >   `docs/cloud.md` or `site/privacy.html` are in repositories you do not have. They are left in rather than
 >   stripped so that the reasoning stays checkable by the people who *can* follow them.
+> - **Where an item has since grown a long internal note, this copy carries the short form and a pointer
+>   into `docs/`** — §3's items 1, 2 and 5 are abridged that way. They are shorter, not different: no claim
+>   on this page is weaker than the internal one except the sentence named below.
 >
-> **One sentence in §6 differs from the internal copy on purpose**, and it is the only one: it describes the
-> privilege a plugin runs with, without naming the specific deployment hardening it comes from. The claim it
-> makes is unchanged and is the one that matters — a plugin can do anything the hub can.
+> **One sentence in §6 is softened on purpose, and it is the only claim anywhere that differs**: it describes
+> the privilege a plugin runs with, without naming the specific deployment hardening it comes from. The claim
+> it makes is unchanged and is the one that matters — a plugin can do anything the hub can.
 >
 > §6 is the part to read if you only read one. It is the honest statement of what installing a plugin costs,
 > and it is deliberately not reassuring.
@@ -130,7 +133,10 @@ in Phase 0 is cheap now and expensive-to-impossible later.
    the protocol *asks* rather than requires because a rule nobody can check invites the reader to trust
    something false; and a driver can declare a **hold** — "I am deliberately waiting, until *T*". See
    [`docs/driver-protocol.md`](../driver-protocol.md) §4.
-   <br>Still open, and hub-side rather than protocol: no driver call carries a deadline.
+   <br>~~Still open, and hub-side rather than protocol: no driver call carries a deadline.~~ **Shipped** —
+   one interceptor on the channel rather than an edit at each of 25 call sites, so the twenty-sixth is
+   bounded without anybody remembering. Streaming is deliberately untouched: a deadline on `StreamEvents`
+   would kill every healthy driver in the house on a timer.
 6. **A secret-redaction obligation that survives leaving C#.** `DriverHost.cs:255` registers config secrets
    for redaction automatically, so a C# plugin gets it invisibly and **a Python plugin gets nothing** — skip
    it and every captured diagnostic ships the device's password. There is no wire-level equivalent. This is
@@ -139,11 +145,24 @@ in Phase 0 is cheap now and expensive-to-impossible later.
 
 ### Phase 1 — make the hub able to find and launch a plugin
 
-Enumerate `REMAESTRO_DRIVERS_DIR` instead of reading 43 hard-coded entries. Add `plugin.json` with
-`exec` + `args` so an interpreter need not be smuggled through a shebang. Set `WorkingDirectory` on launch
-and pass a neutrally-named `REMAESTRO_DRIVER_URL` alongside `ASPNETCORE_URLS`. Fix `StampFor`, which stamps
-one file's size and mtime — **a multi-file plugin with a launcher entrypoint serves a stale descriptor
-forever, silently**, which is precisely the failure that comment was written about.
+~~Enumerate `REMAESTRO_DRIVERS_DIR` instead of reading 43 hard-coded entries.~~ **Shipped.** This paragraph
+was written before any of it was built, and **two of its sentences are wrong**, corrected here rather than
+left to be copied out by somebody reading the plan on its own:
+
+- The variable is **`REMAESTRO_PLUGINS_DIR`**, and it overrides the root a hub looks for plugins under. The
+  43 configured drivers are still read from configuration; installed plugins are appended to that list, and
+  configuration wins a name collision.
+- `plugin.json` carries **`exec` alone, as a full argv** — not `exec` + `args`. One field is better anyway:
+  two invite the question of whether `exec` may contain spaces, which is the question an argv exists to
+  delete. **The normative contract is
+  [`docs/plugin-manifest.schema.json`](../plugin-manifest.schema.json)** — published, versioned with the
+  proto, and what the hub is tested against; [`docs/driver-protocol.md`](../driver-protocol.md) §6 is the
+  prose beside it. This page is a plan and loses to both.
+
+The rest of the line stands and shipped as written: set `WorkingDirectory` on launch and pass a
+neutrally-named `REMAESTRO_DRIVER_URL` alongside `ASPNETCORE_URLS`; fix `StampFor`, which stamps one file's
+size and mtime — **a multi-file plugin with a launcher entrypoint serves a stale descriptor forever,
+silently**, which is precisely the failure that comment was written about.
 
 Plugins live at `<REMAESTRO_DATA>/plugins/<id>/<version>/` — **specifically not under `app/`**, because
 `SystemdDeployment.ForgetPreviousAsync` deletes all but the newest two version directories.
@@ -155,7 +174,6 @@ the decision above. **First release is the only cheap moment to seal, hide or re
 public-surface pass before publishing rather than after. Note `net10.0`-only is a real constraint on who can
 consume it, and that **GitHub Packages requires auth even to restore public packages** — verified. That makes
 GH feeds fine for dogfooding and *not* a public channel; NuGet.org is the public one.
-
 ### Phase 3 — the proof, as a real deliverable
 
 A non-.NET plugin, end to end, installed the way a user would install it. Both audits left a reproduction

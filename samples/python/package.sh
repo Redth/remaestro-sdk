@@ -46,6 +46,10 @@ find "$STAGE/_vendor" -name '__pycache__' -type d -prune -exec rm -rf {} +
 
 # 3. The manifest the hub reads. Not the one the registry reads — that one lists every version and every
 #    architecture, lives in the registry repo, and never comes near a box.
+#
+#    `../../docs/plugin-manifest.schema.json` is what this has to satisfy, and `docs/driver-protocol.md` §6
+#    is the prose. Keep the two in step: this heredoc is checked against that schema by the hub's own test
+#    suite, so a field added here without being added there fails a build rather than a box.
 cat > "$STAGE/plugin.json" <<JSON
 {
   "id": "$ID",

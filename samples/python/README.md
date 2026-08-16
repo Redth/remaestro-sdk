@@ -30,6 +30,21 @@ the "wire" exists so the sample can show what a captured diagnostic contains.
 That prints the four values install-by-URL needs: the URL you host it at, the SHA-256, the signature, and
 your public key. There is no registry in that path, deliberately.
 
+Step 3 of that script writes the `plugin.json` that goes in the archive — **the file that decides whether
+your plugin runs at all**. [`docs/plugin-manifest.schema.json`](../../docs/plugin-manifest.schema.json) is
+what it has to satisfy and every field's meaning is in its `description`;
+[`docs/driver-protocol.md`](../../docs/driver-protocol.md) §6 is the prose beside it, including the short
+list of places the hub is looser than the schema. Check yours before you host it:
+
+```sh
+pip install check-jsonschema
+check-jsonschema --schemafile ../../docs/plugin-manifest.schema.json dist/linux-arm64/plugin.json
+```
+
+The refusals a hub does produce are worded for a person and name the plugin. The reason to validate anyway
+is the other half: a field the hub reads as absent because it could not parse it — `"abi": "1"` is the one
+you will hit — costs you nothing at install and everything later.
+
 ---
 
 ## The seven things that cost more than the checklist said

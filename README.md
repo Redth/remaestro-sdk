@@ -23,7 +23,9 @@ everything you need on your side of it.
 | **[`samples/dotnet`](samples/dotnet)** | Four real drivers, chosen to cover four different shapes of device. These ship in the product. |
 | **[`dotnet/src/Remaestro.ProxyAgent`](dotnet/src/Remaestro.ProxyAgent)** | A reference *proxy* — the other boundary, for hardware the hub cannot reach over the network. |
 | **[`dotnet/tests`](dotnet/tests)** | A conformance suite for that proxy protocol, written as literal wire vectors so it is portable to any language. |
+| **[`samples/python`](samples/python)** | A driver in Python, generated from the proto with stock `protoc`, packaged, signed and installed the way a stranger would. Nothing in it imports anything of ours. |
 | **[`docs/driver-protocol.md`](docs/driver-protocol.md)** | **The negotiation, the capability list and the heartbeat's obligations** — the parts of the contract a plugin in another language has to implement by hand. |
+| **[`docs/plugin-manifest.schema.json`](docs/plugin-manifest.schema.json)** | **The `plugin.json` inside a plugin archive**, as a JSON Schema. The file that decides whether your plugin runs. |
 | **[`docs/`](docs)** | The specifications behind the parts of the contract that need more than a comment. |
 
 ### Why the proto is not under `dotnet/`
@@ -199,7 +201,11 @@ line between a microcontroller and a small Linux machine falls where it does.
 
 - **[`docs/driver-protocol.md`](docs/driver-protocol.md)** — version negotiation, the capability list, and
   what a heartbeat has to declare before anyone may read anything into silence. **Read this first** if you
-  are generating from the proto rather than using the C# SDK.
+  are generating from the proto rather than using the C# SDK. §6 is packaging.
+- **[`docs/plugin-manifest.schema.json`](docs/plugin-manifest.schema.json)** — the schema for the
+  `plugin.json` inside a plugin archive, with every field's meaning in its `description`. Validate your
+  manifest against it with any draft 2020-12 validator; a hub that will not start your plugin is usually
+  this file.
 - **[`docs/navigation-spec.md`](docs/navigation-spec.md)** — the projection that lets any driver expose its
   content as a browsable library. Read this before implementing `INavigableDevice`.
 - **[`docs/driver-remotes.md`](docs/driver-remotes.md)** — how a driver draws its own remote control layout,

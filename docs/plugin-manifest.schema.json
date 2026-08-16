@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Redth/remaestro-sdk/docs/plugin-manifest.schema.json",
+  "title": "reMaestro plugin manifest (the one inside the archive)",
+  "description": "The plugin.json at the root of a plugin's .tar.gz. It describes exactly one build, and it is the only file the hub reads to learn what to run. There is a second file with this name — the registry submission at plugins/<id>/plugin.json in Redth/remaestro-extensions, which lists every version and every architecture and never comes near a box. They are different files with overlapping fields; the registry's CI checks that they agree on id, version, abi and rid. Validate against this one with any draft 2020-12 validator; docs/driver-protocol.md section 6 is the prose beside it.",
+  "type": "object",
+
+  "additionalProperties": true,
+  "$comment": "additionalProperties is true on purpose, and it is the opposite of the submission schema's rule. The registry refuses a field it cannot check because a person is about to read the claim. The hub is reading a file that has already been through that, and a hub too old to know a field must still run a plugin carrying one — otherwise every field added to this manifest is a flag day for every hub in the field.",
+
+  "required": ["id", "version", "abi", "exec"],
+
+  "properties": {
+    "$schema": {
+      "description": "Optional, and ignored by everything that reads this file. Set it to the raw URL of this schema if you want your editor to check the manifest as you type.",
+      "type": "string"
+    },
+
+    "id": {
+      "description": "What this plugin is called, everywhere. The hub matches it case-insensitively, and refuses to launch a plugin whose id collides with the name of a driver the hub ships — configuration wins, so a plugin cannot replace the Hue driver by being named after it. Anything published through the registry must also satisfy the registry's own rule: reverse-DNS, lowercase, at least three labels, allocated once and never reassigned.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+
+    "version": {
+      "description": "Which build this is. Several versions of one plugin can be installed at once and the newest runs, compared by dotted numeric parts first and only then as text — so 1.10.0 correctly beats 1.9.0. The version also leads the cache stamp, so bumping it invalidates the hub's cached descriptor whatever the bytes did. Anything published through the registry must be strict semver, unprefixed.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+
+    "abi": {
+      "description": "The driver.proto protocol version this build was made against — the same integer the descriptor calls protocol_version, deliberately. The hub refuses to install or launch a plugin whose abi is newer than the protocol it speaks, which is the earlier of the two moments that refusal can happen. Required here even though the hub tolerates it missing: an absent or non-integer abi is read as 0, which is a version nobody speaks, and the registry's CI refuses an archive whose abi does not equal the submission's.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+
+    "kind": {
+      "description": "What the hub should do with this package. Only 'driver' exists, and a hub that finds anything else says so and moves on. Absent reads as 'driver'.",
+      "type": "string",
+      "enum": ["driver"],
+      "default": "driver"
+    },
+
+    "runtime": {
+      "description": "What the box must already have. 'native' is a self-contained or static executable; 'python3' is an interpreter and nothing else — grpcio is a compiled wheel and is on neither the appliance nor in the hub container, so a Python plugin vendors it and is exactly as architecture-bound as a native one. The hub reads this field and does nothing with it: what actually gets launched is exec, and what decides whether this build runs here is rid. It is here so the archive is self-describing and so a reviewer can compare it against the submission by eye.",
+      "type": "string",
+      "enum": ["native", "python3"]
+    },
+
+    "rid": {
+      "description": "The .NET runtime identifier this build is for, matched case-insensitively against the hub's own. Absent means 'runs anywhere', which a script plugin with no compiled dependencies genuinely does — saying it explicitly is what stops 'we forgot' looking like 'we decided'. The registry publishes linux-arm64 and linux-x64, and its CI refuses an archive whose rid is not the architecture it was published under.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+
+    "exec": {
+      "description": "The argv to launch, as a list — never a command line, so nothing anywhere has to quote anything. exec[0] means two different things and the manifest does not say which: './lamp' is a file this package shipped and is resolved against the package root, 'python3' is something the box is expected to have and is left for the OS to find. They are told apart by whether the path exists inside the package, which is the only rule that needs no extra field. Naming an interpreter here is also what saves you smuggling one through a shebang — a shebang takes an absolute path and so cannot select a virtualenv, and does not exist on Windows at all. The process is started with the package root as its working directory, and with the address it must serve on in both REMAESTRO_DRIVER_URL and ASPNETCORE_URLS.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}
