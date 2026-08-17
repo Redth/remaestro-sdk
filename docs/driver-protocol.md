@@ -142,6 +142,37 @@ the user sees an error where an undeclared driver would have degraded quietly.
 
 The three booleans keep being sent. They are not deprecated on the wire and they never will be — rule 1.
 
+#### One optional RPC is deliberately not in that table: `InvokeAssistantTool`
+
+There is no `assistant-tools` capability string, and there should not be. **The declaration is the
+capability**: a driver that fills `DriverDescriptor.assistant_tools` is saying it answers this call, and one
+that leaves it empty is never asked. A second string would be a second way of saying the same thing, and the
+two would eventually disagree.
+
+The failure mode is still the one the paragraph above describes — declare what you implement — but it is a
+soft one here rather than an error in somebody's face. A driver that declares tools and answers
+`UNIMPLEMENTED` (which is what every driver built before this RPC existed does, and what the C# SDK sends
+when you do not override `RunAssistantToolAsync`) gets a sentence in front of the model saying the plugin
+declares the tool and this build of it cannot run one. That is deliberately the *same* answer for both,
+because it is the same fact — and it is deliberately **not** the answer a tool nobody declared gets, because
+"unsupported" and "broken" must not look alike.
+
+**What the hub settles before you are called**, so you do not have to:
+
+- the tool exists, you declared it, and the assistant asking is one of the `surfaces` you named. A tool you
+  offered only on `console` is refused *at the call* when a model names it on the voice path — the plugin is
+  not started and no RPC is made — so you never receive a call for a surface you did not opt into;
+- `args` has been narrowed to the keys your tool declared, so it is a subset of your own `parameters` and
+  never a superset. A key you declared may still be absent: a model is not obliged to fill an optional one,
+  and the hub does not fill one in for it.
+
+**And what you owe.** The call is made inside a turn, with somebody who has just spoken waiting for a reply,
+so it carries a short deadline rather than the ordinary one-minute budget. When it passes, your
+`CancellationToken` is cancelled and the hub tells the model the plugin did not answer in time — as a fact
+about the hub having stopped waiting, never as an answer from you. Your `text` is prose a model reads and
+nothing parses it; the hub bounds its length and truncates with a line saying so rather than refusing,
+because half an answer beats an error to somebody standing in a room.
+
 ### 3.3 `Availability`
 
 Carried alongside `supported` on all six responses.

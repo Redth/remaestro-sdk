@@ -176,12 +176,85 @@ public sealed partial class JellyfinDriver : IRemaestroDriver
     /// </summary>
     public IReadOnlyList<string> Capabilities { get; } = [DriverCapability.Diagnostics];
 
+    /// <summary>
+    /// The servers this driver has been asked to create, so a tool that belongs to the <i>driver</i> has
+    /// something to ask.
+    /// <para>
+    /// A tool is declared on the driver rather than per device — the hub knows what a plugin offers with its
+    /// process stopped — so <see cref="RunAssistantToolAsync"/> arrives with no device named and has to find
+    /// one. Kept here rather than asked of the hub because the hub does not have it either: the device list
+    /// on its side is <c>DriverServiceImpl</c>'s, which is private to the host.
+    /// </para>
+    /// </summary>
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, JellyfinDevice> _servers = new();
+
     public Task<IRemaestroDevice> CreateDeviceAsync(string deviceId, string name, IReadOnlyDictionary<string, string> config, CancellationToken ct)
     {
         var server = config.GetValueOrDefault("serverUrl", "").TrimEnd('/');
-        return Task.FromResult<IRemaestroDevice>(new JellyfinDevice(deviceId, name, server,
+        var device = new JellyfinDevice(deviceId, name, server,
             config.GetValueOrDefault("apiKey", ""), config.GetValueOrDefault("userId"),
-            config.GetValueOrDefault("castTo", ""), Commands, Http));
+            config.GetValueOrDefault("castTo", ""), Commands, Http);
+
+        _servers[deviceId] = device;
+        return Task.FromResult<IRemaestroDevice>(device);
+    }
+
+    /// <summary>
+    /// The other half of the declaration above: what <c>recently_added</c> actually does.
+    ///
+    /// <para>
+    /// <b>Prose, because the answer is read by a model and not parsed by anything.</b> The hub puts these
+    /// words into the conversation unchanged, so whatever is worth understanding has to be in them — a JSON
+    /// blob would be a perfectly good thing to write here and nothing on either side would treat it as one.
+    /// </para>
+    /// <para>
+    /// <b>It answers with titles and nothing else</b>, deliberately. This tool is offered on the voice path,
+    /// where the answer is going to be said out loud in a room, and a list of thirty fields is a paragraph
+    /// nobody can listen to. The hub bounds the length anyway; a plugin that needs bounding is a plugin that
+    /// has already got this wrong.
+    /// </para>
+    /// </summary>
+    public async Task<AssistantToolAnswer?> RunAssistantToolAsync(
+        string toolId, IReadOnlyDictionary<string, string> args, string surface, CancellationToken ct)
+    {
+        // An id this driver does not know is a failure and not a null. Null says "this driver has no tools",
+        // which is a fact about the driver — using it here would tell the hub the wrong thing about the one
+        // tool that does exist.
+        if (toolId != "recently_added")
+            return AssistantToolAnswer.Failed($"This plugin has no tool called '{toolId}'.");
+
+        if (_servers.Values.FirstOrDefault() is not { } server)
+            return AssistantToolAnswer.Failed("No Jellyfin server has been added to this hub yet.");
+
+        var kind = args.GetValueOrDefault("kind", "any");
+        var limit = int.TryParse(args.GetValueOrDefault("limit"), out var n) ? Math.Clamp(n, 1, 50) : 10;
+
+        try
+        {
+            var items = await server.RecentlyAddedAsync(kind, limit, ct);
+
+            if (items.Count == 0)
+                return AssistantToolAnswer.Says(kind == "any"
+                    ? "Nothing has been added to this library recently."
+                    : $"Nothing of that kind has been added to this library recently.");
+
+            return AssistantToolAnswer.Says(
+                $"Most recently added to {server.Name}, newest first: "
+                + string.Join("; ", items.Select(i => i.Title)) + ".");
+        }
+        catch (OperationCanceledException)
+        {
+            // The hub stopped waiting. It has its own sentence for that, and one from here would be a
+            // second account of the same moment arriving after the first.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // A sentence a model can relay to a person, and the technical half kept off it. `error` never
+            // reaches a model, so nothing there has to be phrased for one.
+            return AssistantToolAnswer.Failed(
+                $"Couldn't reach {server.Name} to ask what is new.", ex.ToString());
+        }
     }
 
     /// <summary>
@@ -705,6 +778,31 @@ internal sealed class JellyfinDevice : DeviceBase, INavigableDevice
     /// Named for the rpc it answers (<c>SearchNodes</c>) rather than for the word "search", which this class
     /// also uses for its own <c>search</c> command — the two used to be overloads of one name.
     /// </summary>
+    /// <summary>
+    /// What arrived most recently, newest first — the ordering the hub's own <c>search_media</c> has no
+    /// vocabulary for and this server answers directly.
+    /// </summary>
+    /// <param name="kind">One of the declared options; <c>any</c> asks for the four together.</param>
+    internal async Task<IReadOnlyList<LibraryNode>> RecentlyAddedAsync(string kind, int limit, CancellationToken ct)
+    {
+        var uid = await UserIdAsync(ct);
+
+        // Mapped rather than passed through: `kind` is a word from this driver's own declared option list,
+        // and Jellyfin's type names are its own. An unrecognised one falls back to the whole set instead of
+        // being written into a URL, so nothing a model invents reaches the server as a query parameter.
+        var types = kind switch
+        {
+            "movie" => "Movie",
+            "episode" => "Episode",
+            "audiobook" => "AudioBook,Audio",
+            _ => "Movie,Episode,MusicAlbum,Audio",
+        };
+
+        return await GetItemsAsync(
+            $"{_server}/Users/{uid}/Items?SortBy=DateCreated&SortOrder=Descending&Recursive=true"
+            + $"&IncludeItemTypes={types}&Fields={ItemFields}&Limit={limit}&api_key={_apiKey}", ct);
+    }
+
     public async Task<NodeListing> SearchNodesAsync(string query, BrowseOptions options, CancellationToken ct)
     {
         var uid = await UserIdAsync(ct);

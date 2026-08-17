@@ -85,6 +85,49 @@ public interface IRemaestroDriver
     IReadOnlyList<AssistantToolSpec> AssistantTools => [];
 
     /// <summary>
+    /// Run one of the tools you declared in <see cref="AssistantTools"/>. This is where your code runs
+    /// because a model asked it to.
+    ///
+    /// <para>
+    /// <b>Return null if you do not run tools at all.</b> That is the default, and the hub reads it exactly
+    /// as it reads an older driver that has never heard of this call: it tells the model that the plugin
+    /// declares the tool and this build of it cannot run one. Declaring tools and leaving this alone is
+    /// therefore visible rather than silent — which is the whole point, because "unsupported" and "broken"
+    /// must not look alike.
+    /// </para>
+    /// <para>
+    /// <b>A tool id you do not recognise is a failure, not a null.</b> Answer
+    /// <see cref="AssistantToolAnswer.Failed"/> and say so. Null means "this driver has no tools"; it is a
+    /// fact about the driver, and using it for one unknown id would tell the hub the wrong thing about the
+    /// other nineteen.
+    /// </para>
+    /// <para>
+    /// <b>What the hub has already settled before you are called.</b> The tool exists, you declared it, and
+    /// the assistant asking is one of the surfaces you named — a tool you offered only on
+    /// <see cref="AssistantSurface.Console"/> is refused before it reaches you when a model names it on the
+    /// voice path. So you never have to defend against a surface you did not opt into, and
+    /// <paramref name="surface"/> is there to answer <i>differently</i> rather than to answer at all.
+    /// </para>
+    /// <para>
+    /// <b>Be quick, and expect to be cut off.</b> The call is made inside a turn, with somebody who has just
+    /// spoken waiting for a reply, and it carries a deadline of
+    /// <c>AssistantToolLimits.ResultDeadline</c>. When it passes, <paramref name="ct"/> is cancelled and the
+    /// hub tells the model the plugin did not answer in time — as a fact rather than as an answer, so
+    /// nothing downstream reads a timeout as a tool having replied.
+    /// </para>
+    /// </summary>
+    /// <param name="toolId">Bare, as you declared it — the hub strips the namespace it added.</param>
+    /// <param name="args">
+    /// The model's arguments, narrowed by the hub to the keys your tool declared. A key you did not declare
+    /// is dropped before it gets here, so this is never a superset of your parameters — and a key you did
+    /// declare may still be absent, because a model is not obliged to fill an optional one.
+    /// </param>
+    /// <param name="surface">Which assistant asked — one of <see cref="AssistantSurface"/>'s slugs.</param>
+    Task<AssistantToolAnswer?> RunAssistantToolAsync(
+        string toolId, IReadOnlyDictionary<string, string> args, string surface, CancellationToken ct)
+        => Task.FromResult<AssistantToolAnswer?>(null);
+
+    /// <summary>
     /// True when this type's devices implement <see cref="IRemoteSurfaceDevice"/> — each one draws the
     /// remote it deserves rather than sharing the type's.
     /// <para>

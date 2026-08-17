@@ -90,6 +90,17 @@ service Driver {
   // on demand for a bundle and polled for the live view, which needs no long-lived stream to keep alive.
   rpc SetDiagnostics (SetDiagnosticsRequest) returns (SetDiagnosticsResponse);
   rpc GetDiagnostics (GetDiagnosticsRequest) returns (DiagnosticsMessage);
+
+  // Run one of the tools this driver declared in `assistant_tools` — the other half of that declaration,
+  // and the point at which a plugin's code runs because a model asked it to.
+  //
+  // Not on a device: a tool belongs to the driver. `AssistantToolDescriptor` is on `DriverDescriptor` and
+  // not on any device, and the hub has no device to name when a model calls one.
+  //
+  // A driver that declares no tools is never called here. One that declares tools and does not implement
+  // this answers UNIMPLEMENTED, the same "no" `GetRemote` gets above — and the hub turns it into a
+  // sentence saying the plugin declared the tool and cannot run it, which is more use than a stack trace.
+  rpc InvokeAssistantTool (AssistantToolCallRequest) returns (AssistantToolResultMessage);
 }
 
 // What the hub says about itself when it asks a driver who it is. The other half of negotiation, and the
@@ -654,6 +665,56 @@ message AssistantToolDescriptor {
   // rule something structural to point at instead of a list of names it can never extend — a prompt cannot
   // name a tool that did not exist when it was written.
   bool acts = 6;
+}
+
+// A model asked for one of this driver's declared tools, and the hub has already decided it may.
+//
+// ---- What the hub has settled before this message is sent ---------------------------------------------
+//
+// The tool exists, this driver declared it, and it named `surface` in its own `surfaces` list. That last
+// one is a **refusal at the call and not a filter on the catalogue**: a model can name a tool it was never
+// offered, so the hub re-checks the declaration at the moment of dispatch and answers a refusal instead of
+// this message when it does not hold. A driver therefore never receives a call for a surface it did not
+// name, and does not have to defend against one.
+//
+// The arguments have been narrowed to the keys the tool declared. An argument the model invented is
+// dropped before it gets here, so `args` is a subset of `parameters` and never a superset.
+message AssistantToolCallRequest {
+  // Bare, as declared — "scene_report", not "acme.scene_report". The namespace is the hub's and is
+  // stripped on the way in, so a driver matches on the id it wrote.
+  string tool_id = 1;
+
+  // The model's arguments, flattened to strings the way every other argument on this contract is.
+  map<string, string> args = 2;
+
+  // Which assistant asked: one of the `surfaces` slugs. Informational, and deliberately not a thing to
+  // check — the hub has already refused anything this tool did not name. It is here because a tool offered
+  // on both "console" and "remote" may reasonably answer at different lengths for a screen and for a
+  // speaker, and a driver that wants to make that distinction should not have to be told the surface twice.
+  string surface = 3;
+}
+
+// What the model is told, and it is the only thing the model is told.
+//
+// `text` is prose for a model rather than a structure for a program — the hub puts it into the tool-result
+// message unchanged and does not parse it. Whatever a plugin wants understood has to be in these words.
+//
+// **This is external data**, on the same footing as a media title or a device's reported state: it is
+// written outside the house and outside the model, and the hub treats it as something to read rather than
+// something to obey. See `ai-safety.md` §4 and §9.3 for what that does and does not buy.
+message AssistantToolResultMessage {
+  // False when the tool could not do what was asked. The text still goes to the model — a model that is
+  // told *why* something failed can say so or try another way, and one handed a bare failure cannot.
+  bool ok = 1;
+
+  // What the model reads. Bounded by the hub, which truncates rather than refusing: a tool that answers
+  // with a database is a bug worth surviving, and half an answer is more use to a person standing in a
+  // room than an error.
+  string text = 2;
+
+  // For the hub's log, and never sent to the model. A driver that fills `error` and leaves `text` empty
+  // gets a sentence composed by the hub, so nothing is lost by using this for the technical half.
+  string error = 3;
 }
 
 message CreateDeviceRequest {

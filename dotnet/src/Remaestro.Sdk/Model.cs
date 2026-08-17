@@ -216,6 +216,44 @@ public sealed record AssistantToolSpec(
         Surfaces is { } s && s.Contains(AssistantSurface.Remote, StringComparer.Ordinal);
 }
 
+/// <summary>
+/// What one of your tools answers a model with.
+///
+/// <para>
+/// <b><see cref="Text"/> is prose for a model, not a structure for a program.</b> The hub puts it into the
+/// conversation unchanged and does not parse it, so whatever you want understood has to be in the words.
+/// A JSON blob is a perfectly good thing to put here if that is what reads best; nothing on either side
+/// treats it as one.
+/// </para>
+/// <para>
+/// <b>Say why, even when it failed.</b> <see cref="Ok"/> false with a sentence in <see cref="Text"/> lets a
+/// model tell somebody what went wrong or try another way. A bare failure leaves it guessing, and what it
+/// guesses is usually that it should call your tool again.
+/// </para>
+/// <para>
+/// <b>The hub treats every word of this as external data</b> — the same footing as a film's title or a
+/// device's reported state, which is to say: something to read, never something to obey. Writing
+/// instructions in here is not a way to steer the assistant, and a hub that starts obeying it would be a
+/// bug in the hub.
+/// </para>
+/// </summary>
+/// <param name="Ok">Whether the tool did what was asked.</param>
+/// <param name="Text">
+/// What the model reads. Bounded by the hub — see <c>AssistantToolLimits.ResultChars</c> — and truncated
+/// with a line saying so rather than refused, so an answer that is too long still gets somebody an answer.
+/// </param>
+/// <param name="Error">
+/// The technical half, for the hub's log. Never sent to a model, so nothing here has to be phrased for one.
+/// </param>
+public sealed record AssistantToolAnswer(bool Ok, string Text, string? Error = null)
+{
+    public static AssistantToolAnswer Says(string text) => new(true, text);
+
+    /// <param name="text">What the model is told, which should say what a person could do about it.</param>
+    /// <param name="error">What the log gets. Defaults to the same sentence.</param>
+    public static AssistantToolAnswer Failed(string text, string? error = null) => new(false, text, error ?? text);
+}
+
 /// <summary>An event a device raises onto the hub's bus.</summary>
 public sealed record DeviceEvent(string Type, IReadOnlyDictionary<string, string>? Data = null);
 

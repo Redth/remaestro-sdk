@@ -224,6 +224,60 @@ public sealed class DriverServiceImpl : Driver.DriverBase
         }
     }
 
+    /// <summary>
+    /// Run one of the tools this driver declared — see
+    /// <see cref="IRemaestroDriver.RunAssistantToolAsync"/>, where the contract lives.
+    ///
+    /// <para>
+    /// <b>Null becomes UNIMPLEMENTED, on purpose.</b> A driver that does not override the method and a
+    /// driver built before this rpc existed are the same fact — the plugin declares a tool and this build
+    /// of it cannot run one — so they had better be the same answer on the wire. The alternative is a
+    /// silent empty result that the hub cannot tell from a tool that genuinely had nothing to say.
+    /// </para>
+    /// <para>
+    /// <b>A throw is not.</b> An exception is a tool that failed, which is an ordinary thing for a tool to
+    /// do and is not the same as a driver that has no tools — so it comes back as an answer with
+    /// <c>ok = false</c>, and the model is told what happened rather than being handed a dead call.
+    /// </para>
+    /// </summary>
+    public override async Task<AssistantToolResultMessage> InvokeAssistantTool(
+        AssistantToolCallRequest request, ServerCallContext context)
+    {
+        AssistantToolAnswer? answer;
+        try
+        {
+            answer = await _driver.RunAssistantToolAsync(
+                request.ToolId, new Dictionary<string, string>(request.Args), request.Surface, Token(context));
+        }
+        catch (OperationCanceledException)
+        {
+            // The hub gave up waiting and cancelled. Saying anything here would be answering a question
+            // nobody is still listening for, and the hub has its own sentence for a call that ran out of
+            // time — one that reads as a fact about the plugin rather than as an answer from it.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return new AssistantToolResultMessage
+            {
+                Ok = false,
+                Text = $"That didn't work: {ex.Message}",
+                Error = ex.ToString(),
+            };
+        }
+
+        if (answer is null)
+            throw new RpcException(new Status(StatusCode.Unimplemented,
+                $"This driver declares assistant tools but does not run them ({request.ToolId})."));
+
+        return new AssistantToolResultMessage
+        {
+            Ok = answer.Ok,
+            Text = answer.Text ?? "",
+            Error = answer.Error ?? "",
+        };
+    }
+
     /// <summary>What sits behind this device, when it fronts a bridge (<see cref="IBridgeDevice"/>).</summary>
     public override async Task<BridgedDeviceListMessage> ListBridgedDevices(DeviceRef request, ServerCallContext context)
     {

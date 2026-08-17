@@ -61,19 +61,27 @@ public sealed class LutronDriver : IRemaestroDriver
     /// trigger it.
     /// </para>
     /// <para>
-    /// <b>Why this particular tool is the honest example.</b> A processor-wide blackout is not something
-    /// <c>do</c> can express — <c>do</c> names a capability on one device, and this reaches every load the
-    /// processor owns, including ones the hub has never been told about. That is exactly what makes it
-    /// worth declaring and exactly what makes it a bad thing to have said out loud in a room by somebody
-    /// who meant "turn this lamp off": the failure is a dark house, and the fix is walking to a keypad.
+    /// <b>Why this particular tool is the honest example.</b> Turning off every Lutron load at once is not
+    /// something <c>do</c> can express — <c>do</c> names one capability on one device, so the same request
+    /// through it is a dozen separate calls the model has to decide to make and get right. One command that
+    /// darkens the house is worth declaring for exactly the reason it is a bad thing to have said out loud
+    /// in a room by somebody who meant "turn this lamp off": the failure is a dark house, and the fix is
+    /// walking to a keypad.
+    /// </para>
+    /// <para>
+    /// <b>And the description says what it does rather than what would sound better.</b> It reaches the
+    /// loads this hub has been told about, which is not necessarily every load on the processor — the
+    /// integration protocol has no line meaning "everything", so a tool claiming one would be a claim its
+    /// own code could not keep. A description is the only thing a model is told, and one that overstates is
+    /// how a model comes to report something that did not happen.
     /// </para>
     /// </summary>
     public IReadOnlyList<AssistantToolSpec> AssistantTools { get; } =
     [
         new("all_lights_off", "Turn every light off",
-            "Send the processor a single command that turns off every load it controls, in the whole "
-            + "installation — not one room and not one light. Use it only when somebody has asked for "
-            + "exactly that, and never as a way of turning off a light you could address directly.",
+            "Turn off every Lutron load this hub controls, in one go — not one room and not one light. Use "
+            + "it only when somebody has asked for exactly that, and never as a way of turning off a light "
+            + "you could address directly. It cannot reach loads that have not been added to the hub.",
             Surfaces: [AssistantSurface.Console],
             Acts: true,
             Parameters:
@@ -95,17 +103,76 @@ public sealed class LutronDriver : IRemaestroDriver
         new("integrationId", "number"), new("lastError"),
     ];
 
+    /// <summary>
+    /// The loads this driver has been asked to create, so a tool that belongs to the <i>driver</i> has
+    /// something to act on. A tool is declared per driver rather than per device, so it arrives with no
+    /// device named — and the hub's own device list is private to <c>DriverServiceImpl</c>.
+    /// </summary>
+    readonly System.Collections.Concurrent.ConcurrentDictionary<string, LutronDevice> _loads = new();
+
     public Task<IRemaestroDevice> CreateDeviceAsync(string deviceId, string name, IReadOnlyDictionary<string, string> config, CancellationToken ct)
     {
         var host = config.GetValueOrDefault("host", "");
         if (host.Length == 0) throw new ArgumentException("A Lutron processor needs a host address.");
         var port = int.TryParse(config.GetValueOrDefault("port"), out var p) ? p : 23;
         var fade = double.TryParse(config.GetValueOrDefault("fadeSeconds"), System.Globalization.CultureInfo.InvariantCulture, out var f) ? f : 1;
-        return Task.FromResult<IRemaestroDevice>(new LutronDevice(
+        var device = new LutronDevice(
             deviceId, name, host, port,
             config.GetValueOrDefault("username", "lutron"),
             config.GetValueOrDefault("password", "integration"),
-            config.GetValueOrDefault("integrationId", ""), fade, Commands));
+            config.GetValueOrDefault("integrationId", ""), fade, Commands);
+
+        _loads[deviceId] = device;
+        return Task.FromResult<IRemaestroDevice>(device);
+    }
+
+    /// <summary>
+    /// The other half of the declaration above — the point at which a plugin's code runs because a model
+    /// asked it to.
+    ///
+    /// <para>
+    /// <b>It reports what happened rather than that it was attempted.</b> A tool that acts and answers
+    /// "done" whatever the outcome teaches a model to say "done" to a person, and the person is standing in
+    /// a room that is still lit. So the loads that refused are named and counted, and the answer is
+    /// <c>ok: false</c> when none of them worked.
+    /// </para>
+    /// <para>
+    /// <b>The surface is not checked here, and must not be.</b> The hub has already refused anything this
+    /// tool did not declare itself for — a model naming it on the voice path never reaches this method — so
+    /// a second check would be a second copy of a rule that lives in one place, and the copy is the one that
+    /// would go stale.
+    /// </para>
+    /// </summary>
+    public async Task<AssistantToolAnswer?> RunAssistantToolAsync(
+        string toolId, IReadOnlyDictionary<string, string> args, string surface, CancellationToken ct)
+    {
+        if (toolId != "all_lights_off")
+            return AssistantToolAnswer.Failed($"This plugin has no tool called '{toolId}'.");
+
+        var loads = _loads.Values.Where(d => d.HasIntegrationId).ToList();
+        if (loads.Count == 0)
+            return AssistantToolAnswer.Failed("No Lutron loads have been added to this hub yet.");
+
+        var fade = double.TryParse(args.GetValueOrDefault("fadeSeconds"),
+            System.Globalization.CultureInfo.InvariantCulture, out var f) ? Math.Clamp(f, 0, 60) : 3;
+
+        var refused = new List<string>();
+        foreach (var load in loads)
+        {
+            var result = await load.OffAsync(fade, ct);
+            if (!result.Ok) refused.Add(load.Name);
+        }
+
+        if (refused.Count == loads.Count)
+            return AssistantToolAnswer.Failed(
+                $"None of the {loads.Count} Lutron loads went off — the processor didn't take the command.");
+
+        var done = loads.Count - refused.Count;
+        return refused.Count == 0
+            ? AssistantToolAnswer.Says($"All {done} Lutron loads are going off over {fade:0.##} seconds.")
+            : AssistantToolAnswer.Says(
+                $"{done} of {loads.Count} Lutron loads are going off over {fade:0.##} seconds. "
+                + $"These didn't take it: {string.Join(", ", refused)}.");
     }
 }
 
@@ -125,6 +192,18 @@ internal sealed class LutronDevice : TcpLineDevice
     }
 
     public override IReadOnlyList<CommandInfo> Commands { get; }
+
+    /// <summary>Whether this load has been given the processor's number for it, without which it is unaddressable.</summary>
+    internal bool HasIntegrationId => _id.Length > 0;
+
+    /// <summary>
+    /// Off, at a fade the caller chose rather than the one configured — the driver's <c>all_lights_off</c>
+    /// tool takes a fade as an argument, and going through <c>ExecuteAsync("power_off")</c> would silently
+    /// use the device's own setting instead.
+    /// </summary>
+    internal Task<CommandResult> OffAsync(double fadeSeconds, CancellationToken ct) =>
+        SendResultAsync(
+            $"#OUTPUT,{_id},1,0,{fadeSeconds.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}", ct);
 
     /// <summary>The processor prompts with "login:" and "password:" and expects bare lines back.</summary>
     protected override async Task OnConnectedAsync(CancellationToken ct)

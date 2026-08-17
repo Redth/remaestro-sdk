@@ -186,4 +186,43 @@ public static class AssistantToolLimits
 
     /// <summary>Tools one plugin may declare.</summary>
     public const int ToolsPerPlugin = 20;
+
+    /// <summary>
+    /// Characters of answer the hub will carry back from one tool call. Longer answers are <b>truncated
+    /// rather than refused</b>, with a line saying so.
+    ///
+    /// <para>
+    /// <b>The arithmetic, because a result is not paid for once.</b> A tool result goes into the
+    /// conversation and is re-sent with every later round of the same turn, and the loop runs up to ten.
+    /// So four thousand characters — call it a thousand tokens — is up to ten thousand tokens if it lands
+    /// in the first round and the model keeps working. That is already the expensive end of what a single
+    /// tool ought to say, and it is why this is smaller than a reader expects rather than larger.
+    /// </para>
+    /// <para>
+    /// <b>Truncated and not refused</b>, which is the opposite of how this codebase treats an over-long
+    /// <i>description</i> — and deliberately. A description is read before anybody has spoken, so refusing
+    /// it costs a support question and nothing else. An answer is read by a person standing in a room
+    /// waiting, and half of one beats an error: a tool that replies with a database is a bug worth
+    /// surviving. The truncation says the number so the plugin's author can find out from a screenshot.
+    /// </para>
+    /// </summary>
+    public const int ResultChars = 4_000;
+
+    /// <summary>
+    /// How long the hub waits for one tool call before giving up on it.
+    ///
+    /// <para>
+    /// <b>Shorter than an ordinary driver call, and that is the point.</b> A command sent at hardware gets
+    /// a minute because a projector really can take that long to warm up, and nobody is necessarily
+    /// waiting. A tool call is made <i>inside a turn</i>, with a person who has just said something out
+    /// loud, and the hub cannot answer them until it comes back. Ten rounds of a minute each is a hub that
+    /// has stopped answering, with nothing on fire.
+    /// </para>
+    /// <para>
+    /// The number is a wall clock the assistant loop never had: it is bounded at ten rounds and four
+    /// thousand output tokens and by nothing at all in seconds, which was fine while every arm of the
+    /// dispatcher was in-process and stopped being fine the moment one of them crossed to another process.
+    /// </para>
+    /// </summary>
+    public static readonly TimeSpan ResultDeadline = TimeSpan.FromSeconds(20);
 }
