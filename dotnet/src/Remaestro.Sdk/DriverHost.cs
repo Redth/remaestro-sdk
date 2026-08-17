@@ -81,6 +81,7 @@ public sealed class DriverServiceImpl : Driver.DriverBase
         d.DiscoveryServices.AddRange(_driver.DiscoveryServices);
         d.RemoteTemplates.AddRange(_driver.RemoteTemplates.Select(ToProto));
         d.MediaTypes.AddRange(_driver.MediaTypes.Select(ToProto));
+        d.AssistantTools.AddRange(_driver.AssistantTools.Select(ToProto));
         return Task.FromResult(d);
     }
 
@@ -324,10 +325,17 @@ public sealed class DriverServiceImpl : Driver.DriverBase
             var config = new Dictionary<string, string>(request.Config);
 
             // Mark this device's secrets so diagnostics can never surface them — the values matched against
-            // every captured record, redacted before it leaves the process. Type-declared secrets, plus
-            // anything whose key reads like a credential, since a driver may have typed a token as a string.
+            // every captured record, redacted before it leaves the process.
+            //
+            // Three ways a field gets here, and the order is the contract. A declared Sensitivity wins
+            // outright, in both directions: SENSITIVE and WRITE_ONLY are registered whatever the widget
+            // says, and NORMAL is a driver stating that `publicKey` is not a credential, which switches the
+            // guesswork off for that field alone. Only a field that declared nothing falls through to what
+            // this did before — the type string, then the key reading like a credential — because a driver
+            // written before Sensitivity existed still types a token as a string, and narrowing redaction
+            // is not a thing to do quietly.
             foreach (var field in _driver.ConfigSchema)
-                if ((field.Type == "secret" || LooksSecret(field.Key)) && config.TryGetValue(field.Key, out var value))
+                if (RegistersAsSecret(field) && config.TryGetValue(field.Key, out var value))
                     Diag.RegisterSecret(value);
 
             var device = await _driver.CreateDeviceAsync(request.DeviceId, request.Name, config, Token(context));
@@ -467,6 +475,29 @@ public sealed class DriverServiceImpl : Driver.DriverBase
 
     static bool LooksSecret(string key) =>
         SecretHints.Any(h => key.Contains(h, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Whether this field's value is registered with <see cref="Diag"/> for redaction.
+    ///
+    /// <para>
+    /// <b>A declaration beats a guess, both ways round.</b> <see cref="FieldSensitivity.Normal"/> is the
+    /// half that is easy to forget: it exists so a driver can say that <c>publicKey</c> or <c>authorName</c>
+    /// is not a credential, and saying so has to actually switch <see cref="LooksSecret"/> off or it is a
+    /// field that does nothing. The cost of getting that wrong is bounded — a value that should have been
+    /// redacted appears in this driver's own wire capture — and it is the driver's own call to make.
+    /// </para>
+    /// <para>
+    /// <see cref="FieldSensitivity.Unspecified"/> is <i>not</i> Normal, which is the whole reason the enum
+    /// has four members. It means nobody said, so the guesswork stays exactly as it was: forty drivers were
+    /// written before this field existed and several of them type a token as a <c>string</c>.
+    /// </para>
+    /// </summary>
+    static bool RegistersAsSecret(ConfigField field) => field.Sensitivity switch
+    {
+        FieldSensitivity.Sensitive or FieldSensitivity.WriteOnly => true,
+        FieldSensitivity.Normal => false,
+        _ => field.Type == "secret" || LooksSecret(field.Key),
+    };
 
     /// <summary>What we last told the hub each device could do, so we only speak up when that changes.</summary>
     readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _sentCommands = new();
@@ -704,8 +735,37 @@ public sealed class DriverServiceImpl : Driver.DriverBase
             Advanced = f.Advanced,
             Managed = f.Managed,
             ShowWhen = f.ShowWhen ?? "",
+            Sensitivity = (Remaestro.Grpc.Sensitivity)(int)f.Sensitivity,
         };
         if (f.Options is not null) m.Options.AddRange(f.Options.Select(ToProto));
+        return m;
+    }
+
+    /// <summary>
+    /// A declared assistant tool as it goes over the wire.
+    /// <para>
+    /// <b>The id is sent bare and the hub namespaces it.</b> Nothing here prefixes it with the type id,
+    /// because two parties both prefixing would produce <c>lutron.lutron.scene_report</c> and one party
+    /// deciding not to would produce a collision — so exactly one end owns it, and it is the end that knows
+    /// every other plugin's name.
+    /// </para>
+    /// <para>
+    /// Nothing here refuses an over-long description either. The hub is the party with a screen to explain a
+    /// refusal on and a log to record it in, and it has to make that judgement about plugins written in
+    /// languages this SDK will never see — so the check lives there, once, rather than here and there.
+    /// </para>
+    /// </summary>
+    static Remaestro.Grpc.AssistantToolDescriptor ToProto(AssistantToolSpec t)
+    {
+        var m = new Remaestro.Grpc.AssistantToolDescriptor
+        {
+            Id = t.Id,
+            Label = t.Label,
+            Description = t.Description,
+            Acts = t.Acts,
+        };
+        if (t.Surfaces is not null) m.Surfaces.AddRange(t.Surfaces);
+        if (t.Parameters is not null) m.Parameters.AddRange(t.Parameters.Select(ToProto));
         return m;
     }
 

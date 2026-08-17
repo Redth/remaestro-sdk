@@ -185,6 +185,15 @@ message DriverDescriptor {
   // descriptor and can therefore describe a library whose plugin is not running, and a type repeated on
   // sixty nodes a page would still be undiscoverable until somebody had already browsed to one.
   repeated MediaTypeMessage media_types = 17;
+
+  // Tools this driver offers the assistant — see AssistantToolDescriptor, which is where the reasoning is.
+  //
+  // On the descriptor, and that costs one re-introspection on the release that carries it: the hub hashes
+  // DriverDescriptor and everything it nests to decide whether a cached descriptor is still readable, so a
+  // new nested message discards every cached one. Paid deliberately, for the same reason media_types paid
+  // it — the alternative is that the assistant's catalogue is empty until every plugin has been started,
+  // which would make the tools a plugin offers depend on what somebody happened to open first.
+  repeated AssistantToolDescriptor assistant_tools = 18;
 }
 
 // A media type a plugin invents, declared so the hub can route it and draw it.
@@ -476,6 +485,61 @@ message ConfigField {
   // A driver with several ways to reach the same hardware has fields that only apply to one of them,
   // and showing all of them at once asks people to know which four of the seven boxes to ignore.
   string show_when = 13;
+
+  // How careful the hub has to be with this field's *value* — see Sensitivity.
+  //
+  // **Declared, rather than guessed from the key or the widget.** Until this field existed the hub decided
+  // by looking at the type string and, failing that, at whether the key contained one of a list of words —
+  // and there are five such lists in the product, which do not agree with each other. The one that decides
+  // whether a box is masked has no bare "key" and no bare "pass", so a field named `clientKey` declared as
+  // `string` rendered as ordinary visible text while another panel one click away masked the same value.
+  //
+  // A survey of every comparable system found the same failure in each of them: Homebridge has no password
+  // type at all, so `"format": "password"` silently produces a plain text box; Home Assistant masks on a
+  // substring of the field's *name*, so `api_key` renders in the clear. Treating "secret" as a widget is
+  // the design that failed everywhere it was tried. This is the classification, and `type` stays the
+  // widget — the two are orthogonal, which is Terraform's split and Sonarr's.
+  //
+  // **Unset is not "normal".** It means the plugin did not say, and the hub falls back to exactly what it
+  // did before: the `type` string, then the heuristics. Saying nothing therefore costs a plugin nothing and
+  // gains it nothing, which is what makes this safe to add to a contract that is already in the field.
+  Sensitivity sensitivity = 14;
+}
+
+// What the hub must do with a field's value, as distinct from what the form draws for it.
+//
+// Two levels rather than a boolean, because "don't show it on a screen" and "don't keep it at all" are
+// different requirements and every system that collapsed them got one of the two wrong. Terraform carries
+// exactly this split as `sensitive` versus `write_only`; Backstage carries a three-valued `visibility` and
+// defaults it to the closed end for the same reason.
+enum Sensitivity {
+  // The plugin did not say. The hub reads `type` and its own heuristics, exactly as it did before this
+  // field existed — so an old plugin and a plugin that declines to declare are treated identically.
+  SENSITIVITY_UNSPECIFIED = 0;
+
+  // An ordinary value. Say this to positively opt *out* of the heuristics: a field genuinely called
+  // `publicKey` or `passenger_count` is not a credential, and the word lists cannot tell.
+  SENSITIVITY_NORMAL = 1;
+
+  // A credential. Never rendered into a page, never printed in a log, trace or diagnostic bundle — and
+  // still stored, because the hub has to be able to reconnect without asking a person again.
+  //
+  // "Never rendered" is stronger than "rendered as dots" and the difference is the whole point: this hub's
+  // console is Blazor Server, so a value written into an input's `value=` attribute crosses the circuit to
+  // the browser whether or not the glyphs are masked. What the hub sends instead is *whether* something is
+  // stored — Grafana's `secureJsonFields` shape — with an explicit button to remove it, because a box that
+  // starts empty can no longer say "clear this" by being emptied.
+  SENSITIVITY_SENSITIVE = 2;
+
+  // A credential the hub must **not keep**: a pairing PIN, a one-time code, a token the plugin exchanges
+  // for something else at startup. It is handed to the plugin when the device is created and it is not
+  // written to storage, so it does not survive a restart and it is not in a backup bundle — which is a
+  // plaintext, unencrypted, Admin-readable dump, so what is not in it is worth being able to state.
+  //
+  // The cost is real and belongs to the plugin author: a device configured with a write-only field will be
+  // recreated without it after a reboot. Declare this only where the plugin can proceed without it, or
+  // where a person re-supplying it is the intended flow. Everything else wants SENSITIVE.
+  SENSITIVITY_WRITE_ONLY = 3;
 }
 
 message FieldOptionMessage {
@@ -490,6 +554,106 @@ message CommandDescriptor {
   string label = 2;
   string description = 3;
   repeated ConfigField parameters = 4;
+}
+
+// A tool this driver offers the assistant, and — the part that matters — *who is allowed to reach it*.
+//
+// ---- Why the scope travels with the tool ---------------------------------------------------------------
+//
+// The hub's own assistant already had this problem and solved it once, for itself. Three commands take a
+// free string and send it at the hardware — `system.send_raw`, `text.input`, `avr.zone_select` — and
+// `do(<hid proxy>, "system.send_raw", "UNPAIR all")` drops every Bluetooth bond a proxy holds: reachable by
+// a Viewer, sayable out loud, unconfirmed, and undone only by walking to the far end and pairing everything
+// again. Nobody had written a hostile plugin; that was the product's own code. The hazard was never that
+// the author was hostile, it was that **nobody was looking at the moment it ran**.
+//
+// The fix then was to take those three off the *remote* and keep them on the *console* — Admin or Operator,
+// typed, on a screen, with somebody looking — and it was implemented as a deny-list of three names. That
+// works because the set of capability strings is closed and the hub writes all of them.
+//
+// **A deny-list cannot close an open namespace.** The moment a plugin may name its own tools there is no
+// list of three, or three hundred, that covers `acme.send_raw`; the hub cannot inspect a tool to find out
+// what it does, because a tool is a name, a description and a schema, and the doing is on the far side of a
+// gRPC call. So the scope has to arrive *with* the tool, declared by the only party that knows.
+//
+// ---- The rule ------------------------------------------------------------------------------------------
+//
+// **A tool that acts works on `console` by default. The remote — anything spoken, and the handset — is
+// opt-in, per tool.** The opt-in is not a separate flag: it is naming "remote" in `surfaces` beside
+// `acts: true`, and the hub's job is to make that combination *visible* rather than to refuse it. The
+// plugin's own page says, in words, which of its tools anybody speaking in the house can trigger.
+//
+// Three properties that shape buys, and each is the reason not to add a fourth field:
+//   * it cannot drift out of step with the surface list, because it *is* the surface list;
+//   * it is one concept to learn, in any language — an SDK may make the default pleasant, but the rule does
+//     not live in an SDK, because a Python or Go plugin has to express it as easily as a C# one;
+//   * the dangerous combination is legible in the descriptor, so a console can enumerate it, a test can
+//     count it, and somebody reviewing a manifest can see it without running anything.
+message AssistantToolDescriptor {
+  // Your name for it, bare: "scene_report", not "acme.scene_report". **The hub namespaces it** as
+  // `<type_id>.<id>` and there is no way to opt out of that.
+  //
+  // Not politeness. The assistant's catalogue is one flat list of names and its dispatcher is a switch over
+  // them, so a plugin free to call a tool `do` would put two tools of that name in front of the model with
+  // undefined behaviour, and the call would land on the built-in arm. Namespacing is what makes a plugin's
+  // tools additive instead of a collision waiting for the right name.
+  string id = 1;
+
+  // What a person reads on the plugin's page. Never sent to a model.
+  string label = 2;
+
+  // What the model reads, and it is a prompt.
+  //
+  // Not a caption: a description is the one piece of text a model is *meant* to act on, and it rides in
+  // every request on every surface the tool is offered on — not once, in a result, but before anybody has
+  // said anything. Twenty plugins at five hundred characters each doubles the system prompt on every spoken
+  // turn. So there is a ceiling, per tool and per plugin, and the hub says the number when it refuses.
+  //
+  // The realistic failure here is not a hostile plugin and the ceiling is not a security control. It is an
+  // author writing "always call this first" and degrading every conversation on the hub — which without the
+  // plugin's name attached to it is unattributable, and that is the thing being fixed.
+  string description = 3;
+
+  // The tool's arguments, as ConfigFields rather than as a JSON Schema string.
+  //
+  // Refusing raw JSON Schema is deliberate, and none of the three reasons is about trust. It goes to the
+  // model vendor verbatim, so a malformed one fails the *whole turn* for every tool in it with an error
+  // nobody can trace back to a plugin. It defeats the descriptor cache's invalidation, which hashes field
+  // numbers and names — an opaque string has one field number, so the hash stops moving when the schema
+  // language changes. And ConfigField already carries what a tool parameter needs and more: options,
+  // options_key, min/max, required, help. CommandDescriptor.parameters is already ConfigField, so this is
+  // the established shape rather than a new one; the hub renders them to JSON Schema in one place, which is
+  // also the one place it can bound the size and refuse the pathological.
+  repeated ConfigField parameters = 4;
+
+  // Which assistant surfaces offer this tool. Slugs from the hub's own prompt catalogue, which is the list
+  // a person can open and read:
+  //
+  //   "remote"           — anything spoken in the house, and the chat on a handset
+  //   "console"          — the panel in the web console; Admin or Operator, typed, on a screen
+  //   "rules"            — the rule editor's assistant
+  //   "activities"       — the activity builder's assistant
+  //   "activity-doctor"  — the thing that repairs a running activity
+  //
+  // **Empty means offered nowhere**, and that is the default. Under a trusted model the argument for it is
+  // not safety: a tool offered everywhere makes every prompt longer and every model's choice harder, and
+  // that failure is diffuse and lands on somebody else. Silence is the only default whose failure mode is a
+  // support question rather than a slow, unattributable degradation.
+  //
+  // An unrecognised slug is dropped rather than refused — rule 4 at the top of this file — so a plugin
+  // written against a hub with a surface this one has never heard of still offers its other tools.
+  repeated string surfaces = 5;
+
+  // Whether calling this changes anything: turns something on, writes a setting, sends at hardware. False
+  // means it only reads.
+  //
+  // **A claim, not a guarantee, and it must be presented as one.** Nothing can check it — the doing is on
+  // the far side of a gRPC call. It is the same kind of statement as an infrared transport declaring that
+  // it can never confirm anything: a fact only the driver knows, which the product uses to describe itself
+  // honestly. It gives the console a sentence to print, and it gives the "ask before something disruptive"
+  // rule something structural to point at instead of a list of names it can never extend — a prompt cannot
+  // name a tool that did not exist when it was written.
+  bool acts = 6;
 }
 
 message CreateDeviceRequest {

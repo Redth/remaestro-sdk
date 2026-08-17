@@ -41,3 +41,49 @@ public static class DriverCapability
     /// <inheritdoc cref="Remaestro.Grpc.DriverCapability.Diagnostics"/>
     public const string Diagnostics = Remaestro.Grpc.DriverCapability.Diagnostics;
 }
+
+/// <summary>
+/// The assistant surfaces a tool may be offered on, under the namespace a driver author already has
+/// imported. Every value is the corresponding constant from <see cref="Remaestro.Grpc.AssistantSurface"/>,
+/// so the two cannot drift — see <see cref="DriverCapability"/> for why the re-export exists at all.
+/// </summary>
+public static class AssistantSurface
+{
+    /// <inheritdoc cref="Remaestro.Grpc.AssistantSurface.Remote"/>
+    public const string Remote = Remaestro.Grpc.AssistantSurface.Remote;
+
+    /// <inheritdoc cref="Remaestro.Grpc.AssistantSurface.Console"/>
+    public const string Console = Remaestro.Grpc.AssistantSurface.Console;
+
+    /// <inheritdoc cref="Remaestro.Grpc.AssistantSurface.Rules"/>
+    public const string Rules = Remaestro.Grpc.AssistantSurface.Rules;
+
+    /// <inheritdoc cref="Remaestro.Grpc.AssistantSurface.Activities"/>
+    public const string Activities = Remaestro.Grpc.AssistantSurface.Activities;
+
+    /// <inheritdoc cref="Remaestro.Grpc.AssistantSurface.ActivityDoctor"/>
+    public const string ActivityDoctor = Remaestro.Grpc.AssistantSurface.ActivityDoctor;
+
+    /// <inheritdoc cref="Remaestro.Grpc.AssistantSurface.All"/>
+    public static IReadOnlyList<string> All => Remaestro.Grpc.AssistantSurface.All;
+
+    /// <inheritdoc cref="Remaestro.Grpc.AssistantSurface.IsKnown"/>
+    public static bool IsKnown(string? surface) => Remaestro.Grpc.AssistantSurface.IsKnown(surface);
+}
+
+/// <summary>
+/// How much text your declared tools may add to what a model is told, under the namespace a driver author
+/// already has imported. Every value is the corresponding constant from
+/// <see cref="Remaestro.Grpc.AssistantToolLimits"/>.
+/// </summary>
+public static class AssistantToolLimits
+{
+    /// <inheritdoc cref="Remaestro.Grpc.AssistantToolLimits.DescriptionChars"/>
+    public const int DescriptionChars = Remaestro.Grpc.AssistantToolLimits.DescriptionChars;
+
+    /// <inheritdoc cref="Remaestro.Grpc.AssistantToolLimits.PerPluginChars"/>
+    public const int PerPluginChars = Remaestro.Grpc.AssistantToolLimits.PerPluginChars;
+
+    /// <inheritdoc cref="Remaestro.Grpc.AssistantToolLimits.ToolsPerPlugin"/>
+    public const int ToolsPerPlugin = Remaestro.Grpc.AssistantToolLimits.ToolsPerPlugin;
+}

@@ -50,6 +50,39 @@ public sealed class LutronDriver : IRemaestroDriver
             [new("command", "Command", Required: true)]),
     ];
 
+    /// <summary>
+    /// One tool, and it is the sample of the <i>acting</i> case — see <see cref="AssistantToolSpec"/>.
+    ///
+    /// <para>
+    /// <b>Console only, and that is the default rather than a precaution taken here.</b> Writing
+    /// <c>Surfaces: [AssistantSurface.Console]</c> beside <c>Acts: true</c> is what a driver author gets by
+    /// writing the obvious thing; putting <see cref="AssistantSurface.Remote"/> in that list is the opt-in,
+    /// and it would print on this plugin's page as a sentence saying anybody speaking in the house can
+    /// trigger it.
+    /// </para>
+    /// <para>
+    /// <b>Why this particular tool is the honest example.</b> A processor-wide blackout is not something
+    /// <c>do</c> can express — <c>do</c> names a capability on one device, and this reaches every load the
+    /// processor owns, including ones the hub has never been told about. That is exactly what makes it
+    /// worth declaring and exactly what makes it a bad thing to have said out loud in a room by somebody
+    /// who meant "turn this lamp off": the failure is a dark house, and the fix is walking to a keypad.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<AssistantToolSpec> AssistantTools { get; } =
+    [
+        new("all_lights_off", "Turn every light off",
+            "Send the processor a single command that turns off every load it controls, in the whole "
+            + "installation — not one room and not one light. Use it only when somebody has asked for "
+            + "exactly that, and never as a way of turning off a light you could address directly.",
+            Surfaces: [AssistantSurface.Console],
+            Acts: true,
+            Parameters:
+            [
+                new("fadeSeconds", "Fade time", Type: "number", Default: "3", Min: 0, Max: 60,
+                    Help: "Seconds the whole house takes to go dark. 0 snaps instantly."),
+            ]),
+    ];
+
     public IReadOnlyList<EventSchema> Events { get; } =
     [
         new("power.changed", "On or off changed", [new("power", "string", "on | off")]),

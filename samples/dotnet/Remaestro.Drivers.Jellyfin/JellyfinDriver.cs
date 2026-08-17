@@ -52,7 +52,12 @@ public sealed partial class JellyfinDriver : IRemaestroDriver
     public IReadOnlyList<ConfigField> ConfigSchema { get; } =
     [
         new("serverUrl", "Server URL", Required: true, Help: "e.g. https://jelly.example.net"),
-        new("apiKey", "API Key", Type: "secret", Required: true, Help: "Jellyfin → Dashboard → API Keys"),
+        // Declared sensitive as well as typed secret, and the pair is the sample rather than a belt-and-braces
+        // habit. `Type` is the widget — a masked box — and Sensitivity is what the hub must do with the value,
+        // which is a different question with a different answer for a picker or a number. Saying it here means
+        // this key is never guessed at by a word list: it is redacted because the driver said so.
+        new("apiKey", "API Key", Type: "secret", Required: true, Help: "Jellyfin → Dashboard → API Keys",
+            Sensitivity: FieldSensitivity.Sensitive),
         new("userId", "User Id", Help: "Optional; used to scope search results"),
         new("castTo", "Play on", Help: "The name of a Jellyfin app signed in to this server, e.g. \"Living Room TV\". "
             + "Fill this in to make the server somewhere you can send things, rather than only somewhere to pick them from."),
@@ -120,6 +125,47 @@ public sealed partial class JellyfinDriver : IRemaestroDriver
         new("book", "Book", "Books", "ti:book", NodeShape.Poster,
             Facts: [new(MediaFacts.Artists, "Author")]),
         new("photoalbum", "Photo album", "Photo albums", "ti:photo", NodeShape.Wide),
+    ];
+
+    /// <summary>
+    /// One tool, and it is the sample of the <i>reading</i> case — see <see cref="AssistantToolSpec"/>.
+    ///
+    /// <para>
+    /// <b><c>Acts: false</c> is why this one is on the remote at all.</b> Nothing it can do changes anything:
+    /// worst case it costs a round trip and returns a list somebody did not want. So it goes where it is
+    /// useful, which for "what's new on the server" is somebody asking out loud in a room. Compare the Lutron
+    /// sample, whose one tool acts and is therefore console-only.
+    /// </para>
+    /// <para>
+    /// <b>It exists because <c>do</c> cannot express it.</b> The hub's own <c>search_media</c> takes a query;
+    /// "what arrived this week" is an ordering over the library, which this server can answer and the hub has
+    /// no vocabulary for. A tool that duplicates a capability is a tool that costs input tokens on every turn
+    /// to make the model's choice harder, and the right number of those is zero.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<AssistantToolSpec> AssistantTools { get; } =
+    [
+        new("recently_added", "What's new on the server",
+            "List what has most recently been added to this Jellyfin library. Read-only: it plays nothing "
+            + "and changes nothing. Use it when somebody asks what is new, what arrived, or what they have "
+            + "not seen yet — not for finding a specific title, which search already does better.",
+            Surfaces: [AssistantSurface.Remote, AssistantSurface.Console],
+            Acts: false,
+            Parameters:
+            [
+                // Declared options rather than prose in the help text, so the hub can render them as an
+                // enum the model must choose from instead of a free string it can invent a value for.
+                new("kind", "Kind", Default: "any",
+                    Help: "Narrow it to one sort of thing",
+                    Options:
+                    [
+                        new("any", "Anything"),
+                        new("movie", "Films"),
+                        new("episode", "Episodes"),
+                        new("audiobook", "Audiobooks"),
+                    ]),
+                new("limit", "How many", Type: "number", Default: "10", Min: 1, Max: 50),
+            ]),
     ];
 
     /// <summary>

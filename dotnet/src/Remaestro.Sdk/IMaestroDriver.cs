@@ -65,6 +65,26 @@ public interface IRemaestroDriver
     IReadOnlyList<MediaTypeSpec> MediaTypes => [];
 
     /// <summary>
+    /// Tools you offer the assistant — see <see cref="AssistantToolSpec"/>, where the reasoning lives.
+    /// <para>
+    /// <b>Declaring nothing is the default and is a perfectly good answer.</b> A tool costs input tokens on
+    /// every turn of every surface it is offered on, forever, whether or not anybody uses it.
+    /// </para>
+    /// <para>
+    /// <b>If a tool acts, offer it on <see cref="AssistantSurface.Console"/> and think hard before adding
+    /// <see cref="AssistantSurface.Remote"/>.</b> The remote is anything spoken in the house: no screen, no
+    /// confirmation, and a Viewer can reach it. Naming it is the opt-in, and your plugin's page will say so
+    /// in words.
+    /// </para>
+    /// <para>
+    /// Declared on the driver rather than per device, and on the descriptor rather than asked for, so the
+    /// hub knows what you offer with your process stopped — the same arrangement as
+    /// <see cref="RemoteTemplates"/> and <see cref="MediaTypes"/>.
+    /// </para>
+    /// </summary>
+    IReadOnlyList<AssistantToolSpec> AssistantTools => [];
+
+    /// <summary>
     /// True when this type's devices implement <see cref="IRemoteSurfaceDevice"/> — each one draws the
     /// remote it deserves rather than sharing the type's.
     /// <para>

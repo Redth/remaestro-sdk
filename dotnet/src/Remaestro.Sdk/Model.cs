@@ -7,6 +7,51 @@ namespace Remaestro.Sdk;
 /// <param name="Current">This is the value the device reports it's on right now.</param>
 public sealed record FieldOption(string Value, string Label = "", string Detail = "", bool Current = false);
 
+/// <summary>
+/// What the hub must do with a field's value, as distinct from what the form draws for it. Mirrors
+/// <c>Sensitivity</c> in <c>driver.proto</c>, where the reasoning is written out.
+/// <para>
+/// <b>Two levels rather than a boolean.</b> "Don't put it on a screen" and "don't keep it at all" are
+/// different requirements, and every surveyed system that collapsed them got one of the two wrong.
+/// </para>
+/// </summary>
+public enum FieldSensitivity
+{
+    /// <summary>
+    /// You didn't say. The hub reads <see cref="ConfigField.Type"/> and its own heuristics, exactly as it
+    /// did before this existed — so declining to declare costs nothing and changes nothing.
+    /// </summary>
+    Unspecified = 0,
+
+    /// <summary>
+    /// An ordinary value. Worth saying out loud to opt <i>out</i> of the heuristics: the hub's word lists
+    /// cannot tell a <c>publicKey</c> from a private one, and one of them has no bare "key" in it at all.
+    /// </summary>
+    Normal = 1,
+
+    /// <summary>
+    /// A credential. Never rendered into a page, never printed in a log, trace or diagnostic bundle — and
+    /// still stored, so the hub can reconnect without asking a person again.
+    /// <para>
+    /// "Never rendered" is stronger than "rendered as dots", and that is the point: this console is Blazor
+    /// Server, so a value written into an input's <c>value=</c> crosses the circuit to the browser whether
+    /// or not the glyphs are masked. The hub sends <i>whether</i> something is stored instead.
+    /// </para>
+    /// </summary>
+    Sensitive = 2,
+
+    /// <summary>
+    /// A credential the hub must not keep: a pairing PIN, a one-time code, a token you exchange at startup.
+    /// It reaches <c>CreateDeviceAsync</c> and is not written to storage, so it does not survive a restart
+    /// and is not in a backup bundle.
+    /// <para>
+    /// The cost is yours: a device configured with one comes back without it after a reboot. Declare it
+    /// only where you can proceed without it, or where somebody re-supplying it is the intended flow.
+    /// </para>
+    /// </summary>
+    WriteOnly = 3,
+}
+
 /// <summary>A configurable field — used for device config and for command parameters.</summary>
 /// <param name="Options">
 /// The values this field accepts, when they're known up front. A driver that knows a device's real list —
@@ -29,6 +74,11 @@ public sealed record FieldOption(string Value, string Label = "", string Detail 
 /// picker chooses, a codeset the remote editor writes. Never shown as something to type into — offering
 /// an empty box for a value the user can't know is worse than not asking.
 /// </param>
+/// <param name="Sensitivity">
+/// How careful the hub has to be with the <i>value</i>, as distinct from what the form draws for it. See
+/// <see cref="FieldSensitivity"/>; unset means "I didn't say", and the hub falls back to reading
+/// <paramref name="Type"/> exactly as it did before this existed.
+/// </param>
 public sealed record ConfigField(
     string Key,
     string Label,
@@ -44,10 +94,25 @@ public sealed record ConfigField(
     double? Max = null,
     bool Advanced = false,
     bool Managed = false,
-    string? ShowWhen = null)
+    string? ShowWhen = null,
+    FieldSensitivity Sensitivity = FieldSensitivity.Unspecified)
 {
     /// <summary>A number field with a range — worth a slider rather than a text box.</summary>
     public bool HasRange => Type == "number" && Min is not null && Max is not null;
+
+    /// <summary>
+    /// Whether this field's value is a credential, by the driver's own declaration or by its type.
+    /// <para>
+    /// <c>Type == "secret"</c> is still read, and still means the same thing, because forty drivers say it
+    /// that way and a contract does not get to change its mind about a field that is already in the field.
+    /// What <see cref="Sensitivity"/> adds is a way to say it about a field whose <i>widget</i> is something
+    /// else — a picker, a number, a multiline block — and a way to say the opposite: a field genuinely
+    /// called <c>publicKey</c> declares <see cref="FieldSensitivity.Normal"/> and stops being guessed at.
+    /// </para>
+    /// </summary>
+    public bool IsSensitive =>
+        Sensitivity is FieldSensitivity.Sensitive or FieldSensitivity.WriteOnly
+        || (Sensitivity is FieldSensitivity.Unspecified && Type == "secret");
 
     /// <summary>
     /// Whether this field applies at all, given what's been filled in so far. <c>ShowWhen</c> reads
@@ -83,6 +148,73 @@ public sealed record CommandInfo(
     string Label,
     string? Description = null,
     IReadOnlyList<ConfigField>? Parameters = null);
+
+/// <summary>
+/// A tool your driver offers the assistant, and — the part that matters — which assistants may reach it.
+///
+/// <para>
+/// <b>The rule: a tool that acts is offered on the console and nowhere else, unless you say otherwise.</b>
+/// The console means Admin or Operator, typed, on a screen, with somebody looking. The remote — anything
+/// spoken in the house, and the chat on a handset — is opt-in per tool, and the opt-in is simply naming
+/// <see cref="AssistantSurface.Remote"/> in <see cref="Surfaces"/> beside <c>Acts = true</c>. There is no
+/// second flag, on purpose: the combination is then legible in the descriptor, so the plugins page can
+/// print it, a test can count it, and somebody reading your manifest can see it without running anything.
+/// </para>
+/// <para>
+/// <b>Where the rule comes from.</b> The product already made this split for its own code. Three commands
+/// take a free string and send it at hardware, and one of them can drop every Bluetooth bond a proxy holds
+/// — reachable by a Viewer, sayable out loud, unconfirmed, undone only by walking to the far end. They were
+/// taken off the remote and kept on the console. The fix was a deny-list of three names, and a deny-list
+/// cannot close an open namespace: nothing can enumerate the tools plugins will invent. So the scope
+/// travels with the tool, declared by the only party that knows what it does.
+/// </para>
+/// <para>
+/// <b>Declaring a tool is not yet the same as it being called.</b> This is the declaration half: the hub
+/// reads what you declare, validates it, shows it on your plugin's page and in the read-only prompt viewer,
+/// and holds you to the size limits. Dispatching a call to your process arrives with the hub half of this
+/// work; until it does, a declared tool is visible and inert. That is stated rather than implied because a
+/// page implying a tool is live when it is not would be worse than no page.
+/// </para>
+/// </summary>
+/// <param name="Id">
+/// Your bare name for it — <c>"scene_report"</c>, not <c>"acme.scene_report"</c>. <b>The hub namespaces it
+/// as <c>&lt;type id&gt;.&lt;id&gt;</c></b> and there is no way to opt out. Lower-case letters, digits and
+/// underscores; anything else is refused with a reason naming your plugin.
+/// </param>
+/// <param name="Label">What a person reads on your plugin's page. Never sent to a model.</param>
+/// <param name="Description">
+/// What the model reads, and it is a prompt rather than a caption — it rides in every request on every
+/// surface you offer the tool on. Keep it inside <see cref="AssistantToolLimits.DescriptionChars"/>
+/// characters; the hub refuses a longer one and says the number.
+/// </param>
+/// <param name="Surfaces">
+/// Which assistants offer it — see <see cref="AssistantSurface"/>. <b>Empty means nowhere, and that is the
+/// default.</b> Not for safety: a tool offered everywhere makes every prompt longer and every model's
+/// choice harder, and that failure is diffuse and lands on somebody else's conversation.
+/// </param>
+/// <param name="Acts">
+/// Whether calling it changes anything — turns something on, writes a setting, sends at hardware. False
+/// means it only reads. <b>A claim, not a guarantee</b>: nothing can check it, because the doing happens
+/// inside your process. The hub uses it to describe your plugin honestly, and presents it as your word.
+/// </param>
+/// <param name="Parameters">
+/// The tool's arguments, as <see cref="ConfigField"/>s. Not a JSON Schema string, deliberately — the hub
+/// renders these to JSON Schema in the one place it can also bound their size, and a schema carried as an
+/// opaque string would go to the model vendor unvalidated and would defeat the descriptor cache's staleness
+/// check. It is already how a command's parameters are declared.
+/// </param>
+public sealed record AssistantToolSpec(
+    string Id,
+    string Label,
+    string Description,
+    IReadOnlyList<string>? Surfaces = null,
+    bool Acts = false,
+    IReadOnlyList<ConfigField>? Parameters = null)
+{
+    /// <summary>Whether this is offered where anybody speaking in the house can trigger it.</summary>
+    public bool OnTheRemote =>
+        Surfaces is { } s && s.Contains(AssistantSurface.Remote, StringComparer.Ordinal);
+}
 
 /// <summary>An event a device raises onto the hub's bus.</summary>
 public sealed record DeviceEvent(string Type, IReadOnlyDictionary<string, string>? Data = null);
