@@ -193,10 +193,12 @@ public static class AssistantToolLimits
     ///
     /// <para>
     /// <b>The arithmetic, because a result is not paid for once.</b> A tool result goes into the
-    /// conversation and is re-sent with every later round of the same turn, and the loop runs up to ten.
-    /// So four thousand characters — call it a thousand tokens — is up to ten thousand tokens if it lands
-    /// in the first round and the model keeps working. That is already the expensive end of what a single
-    /// tool ought to say, and it is why this is smaller than a reader expects rather than larger.
+    /// conversation and is re-sent with every later round of the same turn, and a turn runs to about ten
+    /// rounds — the assistant's own loop is exactly ten, and the activity doctor keeps a slightly longer
+    /// one of its own. So four thousand characters — call it a thousand tokens — is on the order of ten
+    /// thousand tokens if it lands in the first round and the model keeps working. That is already the
+    /// expensive end of what a single tool ought to say, and it is why this is smaller than a reader
+    /// expects rather than larger.
     /// </para>
     /// <para>
     /// <b>Truncated and not refused</b>, which is the opposite of how this codebase treats an over-long
@@ -219,9 +221,23 @@ public static class AssistantToolLimits
     /// has stopped answering, with nothing on fire.
     /// </para>
     /// <para>
-    /// The number is a wall clock the assistant loop never had: it is bounded at ten rounds and four
-    /// thousand output tokens and by nothing at all in seconds, which was fine while every arm of the
-    /// dispatcher was in-process and stopped being fine the moment one of them crossed to another process.
+    /// <b>It is no longer the only clock, and it is still the one this contract promises.</b> When this
+    /// number was chosen the assistant loop was bounded at ten rounds and four thousand output tokens and
+    /// by nothing at all in seconds — which was fine while every arm of the dispatcher was in-process, and
+    /// stopped being fine the moment one of them crossed to another process. A hub now also puts a wall
+    /// clock on the whole turn (ninety seconds in this one, which is a hub's own policy rather than part of
+    /// this contract). The two bound different things and both are wanted: a turn budget ends a turn that
+    /// is going nowhere, and this deadline is what stops a single slow tool from spending the whole of that
+    /// budget in the first round.
+    /// </para>
+    /// <para>
+    /// <b>Running out is not an answer, at either level, and neither one recalls the work.</b> A deadline
+    /// here means the hub stopped waiting — not that the plugin refused, and not that it stopped. Whatever
+    /// it began may still be running on the far side, may still take effect, and may still produce a reply
+    /// nobody will ever hear; nothing on the hub's side can cancel work already begun. A hub is expected to
+    /// say that rather than report a timeout as a result, both in the tool result a model reads and in what
+    /// a person is told. So a tool with side effects should assume that a call it never finished answering
+    /// was made all the same.
     /// </para>
     /// </summary>
     public static readonly TimeSpan ResultDeadline = TimeSpan.FromSeconds(20);
