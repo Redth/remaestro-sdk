@@ -71,8 +71,14 @@ public enum FieldSensitivity
 /// </param>
 /// <param name="Managed">
 /// A field filled by a flow rather than by hand: a credential pairing earns, the entity id the bridge
-/// picker chooses, a codeset the remote editor writes. Never shown as something to type into — offering
-/// an empty box for a value the user can't know is worse than not asking.
+/// picker chooses, a codeset the remote editor writes. <b>Never one of the questions a form asks</b> —
+/// offering an empty box for a value the user can't know is worse than not asking.
+/// <para>
+/// That is a rule about where the field is put, not about whether it exists on screen. An add-device form
+/// leaves it out entirely; an edit form may keep it, in a collapsed group named for whoever wrote the
+/// value, because a flow that writes an id is not always a flow that can rewrite one — the reMaestro hub
+/// keeps them for exactly that reason, and deleting the device is the only other repair.
+/// </para>
 /// </param>
 /// <param name="Sensitivity">
 /// How careful the hub has to be with the <i>value</i>, as distinct from what the form draws for it. See

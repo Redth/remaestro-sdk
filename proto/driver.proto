@@ -489,7 +489,9 @@ message ConfigField {
 
   // A good default most people shouldn't touch — folded away behind "Advanced".
   bool advanced = 11;
-  // Filled by a flow rather than by hand; never offered as something to type into.
+  // Filled by a flow rather than by hand — pairing, a bridge picker, the remote editor. Never one of the
+  // questions a form asks: an add-device form leaves it out, and an edit form that keeps it (so a value
+  // that has gone wrong can be put right) shows it in a collapsed group named for whoever wrote it.
   bool managed = 12;
 
   // "Only ask for this when another field is set to one of these": "transport=serial|network".
