@@ -82,10 +82,18 @@ public static class DriverCapability
     /// Devices answer <c>Browse</c>/<c>GetNode</c>/<c>SearchNodes</c>/<c>InvokeItem</c>
     /// (<c>INavigableDevice</c>). Supersedes <c>supports_navigation</c>.
     /// <para>
-    /// <b>Declaring this one is a promise with teeth.</b> The hub's navigation service has no exception
-    /// handling around browse or search, so a driver that declares navigation and does not implement all
-    /// four surfaces an error to the user rather than degrading quietly. That is the correct behaviour and
-    /// it is why this is worth saying out loud rather than leaving to be discovered.
+    /// <b>Declaring this one is a promise with teeth, on the device's own pages.</b> The hub's navigation
+    /// service has no exception handling around browse or search, so a driver that declares navigation and
+    /// does not implement all four rpcs raises an error to whoever opened it rather than degrading quietly.
+    /// That is the correct behaviour and it is why this is worth saying out loud rather than leaving to be
+    /// discovered.
+    /// </para>
+    /// <para>
+    /// <b>The teeth stop where a search fans out.</b> A search across every library at once folds a library
+    /// that failed into a smaller answer rather than a failed one, so the error a missing
+    /// <c>SearchNodes</c> raises is logged there and goes no further — deliberately, because one library
+    /// being unreachable should not take the rest of the search down with it. A thin cross-library search
+    /// is therefore no evidence the rpc is there; browse the device, where nothing is caught.
     /// </para>
     /// </summary>
     public const string Navigation = "navigation";
