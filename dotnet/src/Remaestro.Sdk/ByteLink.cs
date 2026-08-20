@@ -83,7 +83,14 @@ public sealed class ByteLink : IDisposable
             {
                 // Deliberately no cancellation token. Disposing the stream is what ends this, and that is
                 // the one way to stop a read that leaves nothing half-torn-down.
-                var read = await _stream.ReadAsync(buffer);
+                var reading = _stream.ReadAsync(buffer);
+
+                // Asked before the await, because *whether this read has to wait* is the only local fact
+                // that is about the device rather than about us — see the trace section below, which is
+                // the whole reason it is asked at all.
+                if (!reading.IsCompleted) TraceLineIdle();
+
+                var read = await reading;
                 if (read == 0) break;
 
                 var chunk = Encoding.GetString(buffer, 0, read);
@@ -119,6 +126,36 @@ public sealed class ByteLink : IDisposable
     // A message that never completes still appears — the timer fires on silence regardless of whether what
     // arrived was a whole reply, and a close or a fault flushes immediately. Nothing waits for a terminator
     // it may never get, which matters because the reply that never finished is the one being chased.
+    //
+    // ---- A late reader is not a quiet device -------------------------------------------------------
+    //
+    // This clock used to be started by a chunk being *processed*, so what it measured was the gap between
+    // reads the pump got round to — a fact about this process — while the record it wrote read as a fact
+    // about the device. `#334` demonstrated the difference rather than arguing it: both halves of one
+    // reply handed to a fake before the link was opened, then the pump stalled 99ms between the two reads,
+    // and the trace came back as `*po` and `w=on#` a hundred milliseconds apart. No device caused that
+    // boundary. On a hub running thirty-nine drivers a 60ms stall is not exotic, and the symptom — one
+    // reply drawn as two records — reads exactly like chatty gear, so nobody would ever report it.
+    //
+    // So the clock is started by a read that had to *wait*, and stopped by bytes arriving. "The line has
+    // gone quiet" is a claim about the far end, and the only local evidence for it is that this link asked
+    // for bytes and none were there. How long we then took to get round to them is our business and says
+    // nothing about the device, which is why it no longer cuts a record in half.
+    //
+    // Measured, because the whole thing rests on it: over a loopback socket, every `ReadAsync` with bytes
+    // already in the kernel buffer completes synchronously — `IsCompleted` true, four times out of four,
+    // including after a deliberate 50ms delay — and the read that finds nothing does not. So a backlogged
+    // reader draining a reply that is already there takes it in reads that never wait, and gets one record
+    // however far behind it was.
+    //
+    // What this still cannot tell, stated plainly rather than papered over: a read that genuinely goes
+    // pending and whose *completion* the pump is late to observe. Under thread-pool starvation the bytes
+    // land, the read completes, and the continuation runs a hundred milliseconds later — and from inside
+    // this process that is indistinguishable from a device that paused, because the earliest clock reading
+    // available is the one taken when our own continuation runs. There is no arrival time to be had: a
+    // Stream hands over bytes, not the moment they arrived, so timestamping "at the socket" and
+    // timestamping "at the pump" are the same instant and neither moves that boundary. It is a real
+    // residual and it is undecidable here; the fix above is for the part that is not.
 
     readonly Lock _traceGate = new();
     readonly List<byte> _traceBurst = [];
@@ -127,9 +164,17 @@ public sealed class ByteLink : IDisposable
     /// <summary>How long a quiet line means the message is over. Well under any device's turnaround.</summary>
     static readonly TimeSpan TraceGap = TimeSpan.FromMilliseconds(60);
 
-    /// <summary>Flushed regardless at this size, so a device that streams isn't held indefinitely.</summary>
+    /// <summary>
+    /// Flushed regardless at this size, so a device that streams isn't held indefinitely.
+    /// <para>
+    /// It carries more weight than it looks: a device talking faster than the pump drains it serves every
+    /// read from bytes already buffered, so no read ever waits and the clock below never starts. This is
+    /// what ends the burst then, and it is the only thing that does.
+    /// </para>
+    /// </summary>
     const int TraceBurstMax = 512;
 
+    /// <summary>Bytes are here, so the line is not quiet — whatever we were doing before we noticed.</summary>
     void TraceInbound(ReadOnlySpan<byte> data)
     {
         // Asked before anything is buffered: gathering bytes nobody will read is the cost this is here to
@@ -142,16 +187,31 @@ public sealed class ByteLink : IDisposable
             _traceBurst.AddRange(data);
             full = _traceBurst.Count >= TraceBurstMax;
 
-            if (!full)
-            {
-                // Restarted on every chunk, so the burst ends when the line goes quiet rather than a fixed
-                // time after it started.
-                _traceTimer ??= new Timer(_ => FlushTrace(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
-                _traceTimer.Change(TraceGap, Timeout.InfiniteTimeSpan);
-            }
+            // Stopped rather than restarted. The burst ends when the *device* stops talking, and the next
+            // read that has to wait is what says so; until one does, there is no reason to be counting.
+            if (!full) _traceTimer?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
         }
 
         if (full) FlushTrace();
+    }
+
+    /// <summary>
+    /// A read found nothing waiting, which is the far end having stopped talking — start the clock.
+    /// <para>
+    /// Called from the pump before it awaits, and only when the read did not complete on the spot. Nothing
+    /// gathered means nothing to cut, so an idle link costs one no-op rather than a timer per quiet moment.
+    /// </para>
+    /// </summary>
+    void TraceLineIdle()
+    {
+        if (!Diag.Enabled(_diagId)) return;
+
+        lock (_traceGate)
+        {
+            if (_traceBurst.Count == 0) return;
+            _traceTimer ??= new Timer(_ => FlushTrace(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            _traceTimer.Change(TraceGap, Timeout.InfiniteTimeSpan);
+        }
     }
 
     void FlushTrace()
