@@ -535,7 +535,9 @@ enum Sensitivity {
   SENSITIVITY_NORMAL = 1;
 
   // A credential. Never rendered into a page, never printed in a log, trace or diagnostic bundle — and
-  // still stored, because the hub has to be able to reconnect without asking a person again.
+  // still stored, because the hub has to be able to reconnect without asking a person again. Stored
+  // encrypted, with a key bound to the one hub: see SENSITIVITY_WRITE_ONLY, which is the same at-rest
+  // treatment and a different promise about being read back.
   //
   // "Never rendered" is stronger than "rendered as dots" and the difference is the whole point: this hub's
   // console is Blazor Server, so a value written into an input's `value=` attribute crosses the circuit to
@@ -544,14 +546,31 @@ enum Sensitivity {
   // starts empty can no longer say "clear this" by being emptied.
   SENSITIVITY_SENSITIVE = 2;
 
-  // A credential the hub must **not keep**: a pairing PIN, a one-time code, a token the plugin exchanges
-  // for something else at startup. It is handed to the plugin when the device is created and it is not
-  // written to storage, so it does not survive a restart and it is not in a backup bundle — which is a
-  // plaintext, unencrypted, Admin-readable dump, so what is not in it is worth being able to state.
+  // A credential the hub must hold as tightly as it can: a pairing PIN, a one-time code, a token the
+  // plugin exchanges for something else at startup.
   //
-  // The cost is real and belongs to the plugin author: a device configured with a write-only field will be
-  // recreated without it after a reboot. Declare this only where the plugin can proceed without it, or
-  // where a person re-supplying it is the intended flow. Everything else wants SENSITIVE.
+  // **This comment used to say the value is not written to storage and is not in a backup bundle. That was
+  // never true, and it is not true now.** Nothing read this field on any write path, so a WRITE_ONLY value
+  // was withheld from a form and from an API response exactly as SENSITIVE is and then stored beside it in
+  // the clear. What is implemented as of this commit is the closest honest thing: the hub encrypts it at
+  // rest with a key bound to that one hub and kept out of its own backups, so the database file and the
+  // bundle carry ciphertext that only the machine that wrote it can open. It **is** written to storage, it
+  // **does** survive a restart, and it **is** in a backup bundle — sealed.
+  //
+  // Literal deletion was considered and refused, not skipped. A hub rebuilds a driver's device by replaying
+  // its stored config into CreateDevice on every start, every driver restart and every crash-restart of the
+  // driver process — not only when a person adds one. A field that is genuinely absent from storage is
+  // absent from all of those, so honouring the word "not kept" needs a way for a driver to ask a person for
+  // the value again, which is a protocol addition rather than a storage rule. Until that exists, do not
+  // write a plugin that relies on this value being gone.
+  //
+  // What you may rely on, stated as narrowly as it deserves: the value is not readable in the hub's
+  // database, and a backup restored onto different hardware cannot decrypt it — so the device arrives there
+  // configured in every other respect with this field blank, and somebody has to enter it again. That last
+  // part is the cost, and it is the hub's, not the plugin's.
+  //
+  // Everything a plugin can proceed without still wants SENSITIVE. Choose this one to say the value is
+  // single-use and should never be shown, read back, or carried to another machine.
   SENSITIVITY_WRITE_ONLY = 3;
 }
 

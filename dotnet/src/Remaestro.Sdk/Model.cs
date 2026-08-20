@@ -31,7 +31,9 @@ public enum FieldSensitivity
 
     /// <summary>
     /// A credential. Never rendered into a page, never printed in a log, trace or diagnostic bundle — and
-    /// still stored, so the hub can reconnect without asking a person again.
+    /// still stored, so the hub can reconnect without asking a person again. Stored encrypted, under a key
+    /// bound to the one hub: see <see cref="WriteOnly"/>, which gets the same treatment at rest and makes a
+    /// different promise about being read back.
     /// <para>
     /// "Never rendered" is stronger than "rendered as dots", and that is the point: this console is Blazor
     /// Server, so a value written into an input's <c>value=</c> crosses the circuit to the browser whether
@@ -41,12 +43,29 @@ public enum FieldSensitivity
     Sensitive = 2,
 
     /// <summary>
-    /// A credential the hub must not keep: a pairing PIN, a one-time code, a token you exchange at startup.
-    /// It reaches <c>CreateDeviceAsync</c> and is not written to storage, so it does not survive a restart
-    /// and is not in a backup bundle.
+    /// A credential the hub must hold as tightly as it can: a pairing PIN, a one-time code, a token you
+    /// exchange at startup.
     /// <para>
-    /// The cost is yours: a device configured with one comes back without it after a reboot. Declare it
-    /// only where you can proceed without it, or where somebody re-supplying it is the intended flow.
+    /// <b>This used to say the value is not written to storage and is not in a backup. It was not true then
+    /// and it is not true now.</b> Nothing read this on any write path, so the value was withheld from a
+    /// form and from an API response exactly as <see cref="Sensitive"/> is, and stored beside it in the
+    /// clear. What is built is the closest honest thing: the hub encrypts it at rest under a key bound to
+    /// that one hub and kept out of its own backups, so the database and the bundle carry ciphertext only
+    /// the machine that wrote it can open. It is written, it does survive a restart, and it is in a backup —
+    /// sealed.
+    /// </para>
+    /// <para>
+    /// Deleting it outright was refused rather than skipped: the hub replays stored config into
+    /// <c>CreateDeviceAsync</c> on every start and every driver restart, so a field genuinely absent from
+    /// storage is absent from all of those, and honouring the word needs a way for a driver to ask a person
+    /// again. Until that exists, do not write a plugin that relies on this value being gone.
+    /// </para>
+    /// <para>
+    /// What you may rely on, as narrowly as it deserves: the value is not readable in the hub's database,
+    /// and a backup restored onto different hardware cannot decrypt it — so the device arrives configured
+    /// in every other respect with this field blank. Everything you can proceed without still wants
+    /// <see cref="Sensitive"/>; choose this to say the value is single-use and should never be shown, read
+    /// back, or carried to another machine.
     /// </para>
     /// </summary>
     WriteOnly = 3,

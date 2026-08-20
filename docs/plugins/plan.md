@@ -266,7 +266,7 @@ uneven, and a plugin author should know which is which before relying on one:
 | `options` | **Honoured** — a chooser, with an escape to free text. |
 | `managed` | **Honoured** — kept out of the create form, and shown in a group that names the owner. |
 | `show_when` | **Honoured** — genuinely conditional. One key, `=`, `\|`-ORed values; no ANDing. Hiding a field does not drop its stored value. |
-| `sensitivity` | **Honoured by the console's forms** — a declaration beats the hub's guesses and the value is never rendered back. `WRITE_ONLY` is **not** yet honoured at rest: it is stored like any other value. Do not rely on it to mean "not kept". |
+| `sensitivity` | **Honoured by the console's forms and by the API** — a declaration beats the hub's guesses and the value is never rendered back. At rest, both `SENSITIVE` and `WRITE_ONLY` are **encrypted under a key bound to the one hub**, so the database and any backup carry ciphertext. `WRITE_ONLY` still does **not** mean "not kept": the value is stored and does survive a restart, because the hub replays stored config into `CreateDevice` on every start. A backup restored onto different hardware cannot decrypt these, and the field arrives blank. |
 | `advanced` | **Half** — a disclosure in the create form, ignored in the edit form. |
 | `min` / `max` | **Advisory.** They pick a slider when the type is `number` and *both* are present, and nothing revalidates a bound on save. |
 | `options_key` | **Works for command arguments, not for config.** No config form asks for the list today. |
