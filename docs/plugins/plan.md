@@ -16,8 +16,10 @@ Read the audits for evidence. This page is only for *what to do, in what order, 
 >   `docs/cloud.md` or `site/privacy.html` are in repositories you do not have. They are left in rather than
 >   stripped so that the reasoning stays checkable by the people who *can* follow them.
 > - **Where an item has since grown a long internal note, this copy carries the short form and a pointer
->   into `docs/`** — §3's items 1, 2 and 5 are abridged that way. They are shorter, not different: no claim
->   on this page is weaker than the internal one except the sentence named below.
+>   into `docs/`** — Phase 0's items 1, 2 and 5 are abridged that way, and so is **Phase 6's status note**,
+>   which is the longest of them and is written for a plugin author rather than for the hub's own
+>   maintainers. They are shorter, not different: no claim on this page is weaker than the internal one
+>   except the sentence named below.
 >
 > **One sentence in §6 is softened on purpose, and it is the only claim anywhere that differs**: it describes
 > the privilege a plugin runs with, without naming the specific deployment hardening it comes from. The claim
@@ -216,6 +218,73 @@ A GitHub repo, submission by PR, CI-signed index. The index carries names, versi
 Now, and not before, the things each audit designed: media types declared on the descriptor with
 `plays_as` as the load-bearing field; remote-template resources on disk under the plugin layout;
 AI tools with `acts`/`surfaces`; generalised `ConfigField`; the `/plugins/{id}` console page.
+
+> **Audited 2026-08-20, and four of the five were already built.** This paragraph read as though none of it
+> had happened while §4 below said *"Settled by `#268`"* about the first item — one document contradicting
+> itself in two sections. The standard applied was *a field a proto declares and nothing reads is not
+> done*: each "done" was traced to the code that consumes it, not to the line that declares it. Abridged
+> here per the note at the top; the long form is `docs/plugins/plan.md`.
+
+**1. Media types and `plays_as` — done.** §4 below is the argument. It is not merely declared: the hub
+translates it in one place and asks the destination list about the result at a single production call site,
+so a plugin's invented kind reaches every player that already accepts what it plays as, and nothing below
+the routing boundary has heard of a media type. Two edges remain — validation and matching disagree about
+case, so `plays_as: "Video"` is refused though it would have matched everything; and the value is checked
+against the whole `NavKind` set rather than the playable part of it. The Python sample has no media-type
+support, so a Python plugin cannot declare one today.
+
+**2. Remote-template resources — done.** A plugin ships pictures under its own `assets/` folder and names
+them `plugin:<path>`; the hub resolves the reference into the one form that draws on every surface, bounded
+at 32 KiB a file and 256 KiB a package and refusing rather than truncating. The audit's recommendation was
+departed from in one place, argued rather than dropped: a hub-origin URL does not resolve on the phone,
+whose web view is not on the hub's origin and authenticates with a header an `<img>` cannot send. Fonts are
+refused (licensing) and sounds deferred (no consumer exists).
+
+**3. AI tools with `acts`/`surfaces` — done, and the two fields have different answers.**
+
+`surfaces` is **enforced twice, and the second is the guarantee.** A plugin's tools are added to the
+catalogue the model is given, per assistant, rebuilt every round; they are filtered on the way out and then
+**refused again at the call, before your process is started** — because a model can name a tool it was not
+offered, which makes filtering necessary and insufficient. Declaring no surface means offered nowhere.
+
+`acts` **gates nothing at runtime, and is not meant to.** It is read only by a screen and a log line. That
+is the settled decision rather than an unfinished gate: the hub cannot check what a tool does, because the
+doing is on your side of the call — so `acts: true` beside `remote` in `surfaces` is your opt-in, and the
+product's job is to make it legible to the person who installed you rather than to overrule it. Read the
+`AssistantToolSpec` doc comments before assuming a hub-side veto exists.
+
+Open around it: there is a per-tool and per-plugin size ceiling but none on the sum across plugins on one
+surface, and there is no user-confirmation primitive on the assistant path for any tool, ours or yours.
+
+**4. Generalised `ConfigField` — partly done.** The message carries everything the audit asked for, and
+`ConfigField` is now one grammar across four contexts rather than one — device config, command parameters,
+assistant-tool parameters and media-type facts. Per field, though, what the hub actually *honours* is
+uneven, and a plugin author should know which is which before relying on one:
+
+| field | state |
+|---|---|
+| `options` | **Honoured** — a chooser, with an escape to free text. |
+| `managed` | **Honoured** — kept out of the create form, and shown in a group that names the owner. |
+| `show_when` | **Honoured** — genuinely conditional. One key, `=`, `\|`-ORed values; no ANDing. Hiding a field does not drop its stored value. |
+| `sensitivity` | **Honoured by the console's forms** — a declaration beats the hub's guesses and the value is never rendered back. `WRITE_ONLY` is **not** yet honoured at rest: it is stored like any other value. Do not rely on it to mean "not kept". |
+| `advanced` | **Half** — a disclosure in the create form, ignored in the edit form. |
+| `min` / `max` | **Advisory.** They pick a slider when the type is `number` and *both* are present, and nothing revalidates a bound on save. |
+| `options_key` | **Works for command arguments, not for config.** No config form asks for the list today. |
+
+**There is no hub-side validation of declared metadata** — not `required`, not a range, not membership in
+`options`. Validate your own config when you are asked to create a device; that is the boundary that holds,
+and it is the one the design intends to hold.
+
+**5. The `/plugins/{id}` console page — this was the only item genuinely not started, and it is built now**,
+at `/plugins/installed/{id}`. It shows one plugin at length: where it is installed and what argv is
+launched, the media kinds it declares and what each plays as, the pictures it ships and any it refused, its
+whole tool list, and its pinned publisher with the record of any override.
+
+> **It is not yet the settings screen the design calls for**, and the gap is worth stating plainly because
+> it is larger than the page: **there is no plugin-level settings schema on this wire at all.**
+> `ConfigField` hangs off a device type, a command or a tool — never off the plugin — and there is no rpc
+> to read or write plugin settings and no store behind one. A plugin has a page and nothing to configure on
+> it. That is a phase of its own.
 
 ---
 

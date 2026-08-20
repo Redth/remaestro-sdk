@@ -175,11 +175,20 @@ public sealed record CommandInfo(
 /// travels with the tool, declared by the only party that knows what it does.
 /// </para>
 /// <para>
-/// <b>Declaring a tool is not yet the same as it being called.</b> This is the declaration half: the hub
-/// reads what you declare, validates it, shows it on your plugin's page and in the read-only prompt viewer,
-/// and holds you to the size limits. Dispatching a call to your process arrives with the hub half of this
-/// work; until it does, a declared tool is visible and inert. That is stated rather than implied because a
-/// page implying a tool is live when it is not would be worse than no page.
+/// <b>A declared tool is called. It was not always, and this paragraph used to say so.</b> Until dispatch
+/// landed the hub read a declaration, validated it, showed it on your plugin's page and in the read-only
+/// prompt viewer, and stopped — a declared tool was visible and inert, and this comment said that plainly
+/// so that a page could not imply otherwise. <b>It is now the opposite of the truth</b>, which is worse
+/// than the thing it was written to prevent: it invites you to declare <c>Acts</c> and
+/// <c>Surfaces = ["remote"]</c> on the understanding that nothing can reach it, and something can.
+/// </para>
+/// <para>
+/// What actually happens: the hub adds your tools to the catalogue it gives the model, per assistant,
+/// rebuilt each round; it filters them by <see cref="AssistantToolSpec.Surfaces"/> on the way out; and it
+/// <b>refuses again at the call, before your process is started</b>, because a model can name a tool it was
+/// never offered. Then it calls you. So the surface list is a real boundary and the only one — see
+/// <see cref="AssistantToolSpec.Acts"/>, which is a claim you make to a person and not a gate the hub
+/// enforces.
 /// </para>
 /// </summary>
 /// <param name="Id">
