@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net.Sockets;
 using System.Threading.Channels;
 using Google.Protobuf.Collections;
 using Grpc.Core;
@@ -641,25 +642,79 @@ public sealed class DriverServiceImpl : Driver.DriverBase
         var opts = new BrowseOptions(request.Offset, request.Limit <= 0 ? 100 : request.Limit,
             string.IsNullOrEmpty(request.SortBy) ? null : request.SortBy,
             string.IsNullOrEmpty(request.Filter) ? null : request.Filter);
-        var listing = await nav.BrowseAsync(string.IsNullOrEmpty(request.NodeId) ? null : request.NodeId, opts, Token(context));
-        return ToProto(listing);
+        try
+        {
+            var listing = await nav.BrowseAsync(string.IsNullOrEmpty(request.NodeId) ? null : request.NodeId, opts, Token(context));
+            return ToProto(listing);
+        }
+        catch (Exception ex) when (NavFailure(ex, context) is { } fail) { throw fail; }
     }
 
     public override async Task<LibraryNodeMessage> GetNode(NodeRefMessage request, ServerCallContext context)
     {
         var nav = Nav(request.DeviceId) ?? throw new RpcException(new Status(StatusCode.Unimplemented, "Device is not navigable."));
-        var node = await nav.GetNodeAsync(request.NodeId, Token(context))
-            ?? throw new RpcException(new Status(StatusCode.NotFound, "Unknown node."));
-        return ToProto(node);
+        try
+        {
+            var node = await nav.GetNodeAsync(request.NodeId, Token(context))
+                ?? throw new RpcException(new Status(StatusCode.NotFound, "Unknown node."));
+            return ToProto(node);
+        }
+        catch (Exception ex) when (NavFailure(ex, context) is { } fail) { throw fail; }
     }
 
     public override async Task<NodeListingMessage> SearchNodes(SearchNodesRequest request, ServerCallContext context)
     {
         var nav = Nav(request.DeviceId) ?? throw new RpcException(new Status(StatusCode.Unimplemented, "Device is not navigable."));
         var opts = new BrowseOptions(request.Offset, request.Limit <= 0 ? 100 : request.Limit);
-        var listing = await nav.SearchNodesAsync(request.Query, opts, Token(context));
-        return ToProto(listing);
+        try
+        {
+            var listing = await nav.SearchNodesAsync(request.Query, opts, Token(context));
+            return ToProto(listing);
+        }
+        catch (Exception ex) when (NavFailure(ex, context) is { } fail) { throw fail; }
     }
+
+    /// <summary>
+    /// What a navigation rpc says when it could not be answered — and the reason the browse surface needs
+    /// no new field on the wire.
+    ///
+    /// <para>
+    /// <b>The failure is the error channel.</b> <see cref="NodeListingMessage"/> has nowhere to put "I
+    /// couldn't ask", and a driver that swallows a connection failure to return an empty one hands the hub
+    /// a fact about the library when all it has is a fact about the network. A failed rpc says the
+    /// difference in a way every generated client already understands, and an old hub that reads none of
+    /// this still gets a failure rather than a listing it would have believed.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Three outcomes, and the split is what makes it useful.</b>
+    /// <see cref="DeviceUnreachableException"/> and the connection-shaped exceptions a plain HTTP client
+    /// throws — a refused socket, a DNS miss, a timeout, a non-success status through
+    /// <c>EnsureSuccessStatusCode</c> — become <c>UNAVAILABLE</c>, which the hub renders as "can't reach
+    /// this source" rather than as a red band with a stack trace in it. Anything else is a bug in the
+    /// driver and becomes <c>INTERNAL</c>. Both carry <see cref="Exception.Message"/>, which is the part
+    /// that was missing entirely: gRPC's own default for an unhandled handler exception is the detail
+    /// string <c>"Exception was thrown by handler."</c>, so before this every driver that threw honestly —
+    /// Jellyfin, the reference implementation, among them — reached the screen saying nothing at all.
+    /// </para>
+    ///
+    /// <para>
+    /// Cancellation and an <see cref="RpcException"/> the handler raised itself pass through untouched;
+    /// returning null from the filter is how they stay unhandled rather than being caught and rethrown.
+    /// </para>
+    /// </summary>
+    static RpcException? NavFailure(Exception ex, ServerCallContext context) => ex switch
+    {
+        RpcException => null,
+        OperationCanceledException when context.CancellationToken.IsCancellationRequested => null,
+        DeviceUnreachableException or HttpRequestException or SocketException or IOException
+            or TimeoutException or TaskCanceledException
+            => new RpcException(new Status(StatusCode.Unavailable, Said(ex))),
+        _ => new RpcException(new Status(StatusCode.Internal, Said(ex))),
+    };
+
+    /// <summary>The sentence a person will read. Never blank — an empty detail is what gRPC already gives.</summary>
+    static string Said(Exception ex) => ex.Message is { Length: > 0 } m ? m : ex.GetType().Name;
 
     public override async Task<ExecuteCommandResponse> InvokeItem(InvokeItemRequest request, ServerCallContext context)
     {

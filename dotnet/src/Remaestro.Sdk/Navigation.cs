@@ -8,10 +8,25 @@ namespace Remaestro.Sdk;
 /// </summary>
 public interface INavigableDevice
 {
-    /// <summary>List the children of a node. <paramref name="nodeId"/> null/empty = the library root(s).</summary>
+    /// <summary>
+    /// List the children of a node. <paramref name="nodeId"/> null/empty = the library root(s).
+    /// <para>
+    /// <b>An empty listing means the node is empty.</b> If the server did not answer, throw
+    /// <see cref="DeviceUnreachableException"/> instead — see that type, which is where the reasoning is.
+    /// Returning <c>new NodeListing()</c> after swallowing a connection failure draws a person an empty
+    /// shelf and tells them nothing is there.
+    /// </para>
+    /// </summary>
     Task<NodeListing> BrowseAsync(string? nodeId, BrowseOptions options, CancellationToken ct);
 
-    /// <summary>Full detail for one node (metadata, assets, commands).</summary>
+    /// <summary>
+    /// Full detail for one node (metadata, assets, commands).
+    /// <para>
+    /// <b>Null means the node is not there</b> — the host answers <c>NOT_FOUND</c>, which the hub reads as
+    /// "that item has gone". A server that could not be asked is <see cref="DeviceUnreachableException"/>,
+    /// not null: the two arrive at the same blank sheet otherwise.
+    /// </para>
+    /// </summary>
     Task<LibraryNode?> GetNodeAsync(string nodeId, CancellationToken ct);
 
     /// <summary>
@@ -42,6 +57,13 @@ public interface INavigableDevice
     /// cannot be talked out of them, so leaving the divergence would have made it permanent the moment a
     /// second language existed, while renaming costs three call sites today.
     /// </para>
+    /// <para>
+    /// <b>And the same rule about reachability applies here, where it is easier to get wrong.</b> "Nothing
+    /// matched" and "nobody answered" are both an empty listing, and a search is the surface where the
+    /// first is an ordinary answer — so the second slips through as one. Throw
+    /// <see cref="DeviceUnreachableException"/> when the server did not answer; the empty listing above is
+    /// for a library that answered and cannot search.
+    /// </para>
     /// </summary>
     Task<NodeListing> SearchNodesAsync(string query, BrowseOptions options, CancellationToken ct);
 
@@ -56,6 +78,48 @@ public interface INavigableDevice
     /// </para>
     /// </summary>
     Task<CommandResult> InvokeItemAsync(string nodeId, string commandId, IReadOnlyDictionary<string, string> args, CancellationToken ct);
+}
+
+/// <summary>
+/// "I could not ask." Thrown from the navigation surface when the device or server behind it did not
+/// answer, so the driver has nothing to report about its contents — as distinct from having asked and been
+/// told there is nothing there.
+///
+/// <para>
+/// <b>An empty <see cref="NodeListing"/> is a result, and a driver that could not ask is not entitled to
+/// give one.</b> That is the same rule <see cref="INavigableDevice.SearchNodesAsync"/>'s summary already
+/// states about default interface members, one layer along: "found nothing" is something only a server that
+/// answered can say. A driver that swallows a connection failure and returns <c>new NodeListing()</c>
+/// reports an empty shelf, and an empty shelf is a fact about the library rather than about the network.
+/// The two are indistinguishable on screen, and the hub draws the wrong one.
+/// </para>
+///
+/// <para>
+/// <b>There is no field on the wire for this and there does not need to be one.</b> The channel is the
+/// rpc's own failure: <see cref="DriverHost"/> turns this into <c>UNAVAILABLE</c> carrying
+/// <see cref="Exception.Message"/>, which is a status gRPC has always had and which every language's
+/// generated client already surfaces. A hub too old to look at the code still gets a failed call instead of
+/// a listing it would have believed, which is the safe direction; and a driver too old to throw behaves
+/// exactly as it did before. Adding a field to <c>NodeListingMessage</c> would have bought a partial answer
+/// — "here are four of your five libraries" — that no driver in this repo has ever had to give.
+/// </para>
+///
+/// <para>
+/// <b>Write the message for whoever is looking at the screen</b>, because that is where it ends up: the hub
+/// puts it in front of a person more or less as sent. "Couldn't reach the server: connection refused" is
+/// the register; a stack trace is not.
+/// </para>
+///
+/// <para>
+/// <b>Cached content is the exception, and it is a real one.</b> A driver holding a listing it fetched
+/// earlier should return it rather than throw — stale content beats no content, and the hub says so with a
+/// band above the shelves. Throw when there is nothing to fall back on.
+/// </para>
+/// </summary>
+public sealed class DeviceUnreachableException : Exception
+{
+    public DeviceUnreachableException(string message) : base(message) { }
+    public DeviceUnreachableException(string message, Exception? inner) : base(message, inner) { }
 }
 
 /// <summary>Paging / sort / filter options for a browse or search.</summary>

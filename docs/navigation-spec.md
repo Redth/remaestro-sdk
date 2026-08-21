@@ -404,14 +404,19 @@ exposes it over HTTP. Everything is **per device instance** (a configured Jellyf
 public interface INavigableDevice
 {
     // List the children of a node. nodeId null/empty = the library root(s).
+    // An empty listing means the node is empty. If the server didn't answer, throw
+    // DeviceUnreachableException instead — see §5, "an empty library is not the same as one you
+    // couldn't ask".
     Task<NodeListing> BrowseAsync(string? nodeId, BrowseOptions options, CancellationToken ct);
 
     // Full detail for one node (metadata, assets, commands, maybe related).
+    // Null means "not there" (the host answers NOT_FOUND). A server that couldn't be asked throws.
     Task<LibraryNode?> GetNodeAsync(string nodeId, CancellationToken ct);
 
     // Search across the library. Required, and named for its rpc (SearchNodes) like the two above.
     // A library that can't be searched returns an empty listing itself and says so in a comment:
     // this had a default doing that invisibly, and HDHomeRun inherited it by misspelling the name.
+    // "Nothing matched" is that empty listing; "nobody answered" throws.
     Task<NodeListing> SearchNodesAsync(string query, BrowseOptions options, CancellationToken ct);
 
     // Invoke a per-item command. Returns a result AND (by convention) emits an event for rules (§4).
@@ -507,6 +512,16 @@ Recommended standard events: `library.play`, `library.queue`, `library.resume`, 
   Resolve on `InvokeItem`/`GetNode`, and hand them back via the event + `CommandResult`. This is also why
   `resolve` (§1.6.1) is its own command rather than being folded into `GetNode`: a detail sheet can sit open
   for minutes before anyone presses Play, and a URL fetched to draw it would be stale by then.
+- **An empty library is not the same as one you couldn't ask.** A `NodeListing` with no items says the
+  node is empty, and a person reads that as a fact about their library. If the server didn't answer, throw
+  `DeviceUnreachableException` — `DriverHost` turns it, and the connection-shaped exceptions an HTTP client
+  raises on its own, into `UNAVAILABLE` carrying your message, and the hub draws "can't reach this source"
+  instead of "this folder is empty". **There is no field on the wire for this and there does not need to be
+  one**: the rpc's own failure is the channel, every generated client already surfaces it, and a hub or a
+  driver that predates the rule behaves exactly as it did. The one exception is content you already hold —
+  return a stale listing rather than throwing; the hub bands it as stale. Note that gRPC's default detail
+  for an unhandled handler exception is the string `"Exception was thrown by handler."`, which is why a
+  driver that threw honestly still reached the screen saying nothing until `DriverHost` started mapping.
 - **An item command either does something or answers something, never both.** The reserved `resolve`
   (§1.6.1) answers; everything else does. Guard the `Emit` in `InvokeItemAsync` with
   `NavItemCommand.IsQuery`, and never let an id you don't recognise reach your play branch.
