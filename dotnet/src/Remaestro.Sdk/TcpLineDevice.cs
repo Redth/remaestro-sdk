@@ -244,6 +244,150 @@ public abstract class LineDevice : DeviceBase
         catch (Exception ex) { return CommandResult.Fail(ex.Message); }
     }
 
+    // ---- One command in flight, and the device's verdict on it -----------------------------------------
+
+    /// <summary>
+    /// A command that has gone out and is waiting to hear whether the device objects to it.
+    ///
+    /// <para>
+    /// <b>What is being waited for is an objection, not a confirmation.</b> That is the shape every line
+    /// protocol in this fleet turned out to have, and it is why this is worth writing once. A refusal —
+    /// <c>~ERROR,2</c>, <c>!I</c>, <c>#Error</c>, <c>CH_FAILED NO_LIVE</c>, <c>"result": "fail"</c> — is a
+    /// parse or a lookup failure rather than an action, so it comes back within a round trip or not at all.
+    /// The positive side is weaker in every one of them: an Anthem echoes what it <i>did</i> rather than
+    /// what it was told, a Lutron load already at the level says nothing whatever, a WattBox's <c>OK</c>
+    /// precedes the relay. So <see cref="Took"/> exists only to buy back the latency, and what silence
+    /// means is the driver's to decide — see <see cref="NothingSaid"/>.
+    /// </para>
+    /// <para>
+    /// <b><see cref="Tag"/> is how a driver recognises its own answer.</b> This is the part that genuinely
+    /// differs, and it differs more than it looks: Lutron and Anthem have nothing to correlate on at all
+    /// and rely on there being exactly one command it could belong to; HEOS echoes the command path; a TiVo
+    /// names the channel it tuned to, and announces channel changes somebody made on the sofa in the same
+    /// words. So the tag is whatever that driver needs to hold onto between sending and hearing, and the
+    /// comparison stays in the driver's own <see cref="OnLine"/> where the protocol is understood.
+    /// </para>
+    /// </summary>
+    protected sealed class Turn(object? tag)
+    {
+        /// <summary>Whatever the driver put here when it sent, so its <c>OnLine</c> can recognise the reply.</summary>
+        public object? Tag { get; } = tag;
+
+        internal TaskCompletionSource<string?> Verdict { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>The device said no, in words worth showing whoever pressed the key.</summary>
+        public void Refused(string why) => Verdict.TrySetResult(why);
+
+        /// <summary>
+        /// The device answered. Ends the wait early rather than spending the rest of the window; it is not
+        /// a claim that the thing asked for happened, which none of these protocols can give.
+        /// </summary>
+        public void Took() => Verdict.TrySetResult(null);
+    }
+
+    Turn? _inFlight;
+    readonly SemaphoreSlim _turnLock = new(1, 1);
+
+    /// <summary>The command waiting on this connection, or null. Read from <c>OnLine</c> to answer it.</summary>
+    protected Turn? InFlight => Volatile.Read(ref _inFlight);
+
+    /// <summary>
+    /// How long a command waits for the device to object to it.
+    /// <para>
+    /// It measures one round trip and the device's own turnaround, and nothing beyond that — not a zone
+    /// powering up, not a lamp fading, not a volume ramping. A driver whose device is slower to object, or
+    /// which waits for a physical outcome rather than an objection, overrides this and says why in the
+    /// override.
+    /// </para>
+    /// </summary>
+    protected virtual TimeSpan Objects => TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// What a command reports when the device said nothing at all inside <see cref="Objects"/>.
+    ///
+    /// <para>
+    /// <b>Silence is a success by default, and that default is load-bearing rather than lazy.</b> Every
+    /// one of these protocols has a device or a firmware that answers nothing to a command it performed
+    /// perfectly — an integration login with no monitoring rights, a load told to be what it already is, a
+    /// WattBox 250 where the 800 answers, an Anthem told to do what it is already doing. Reading that as a
+    /// failure would put a red step in activities that have always worked, which is a worse bug than the
+    /// one this machinery exists to fix.
+    /// </para>
+    /// <para>
+    /// Override it where the protocol really does answer every command, so nothing coming back means
+    /// nothing is known — and say, in the sentence, what the person should go and look at.
+    /// </para>
+    /// </summary>
+    protected virtual CommandResult NothingSaid(Turn turn) => CommandResult.Success();
+
+    /// <summary>
+    /// What is at the far end of this connection, in a few words — "the processor", "the box". Used in the
+    /// sentence a command gets when the connection goes out from under it, which reads better naming the
+    /// thing that stopped answering than repeating the device's own name twice.
+    /// </summary>
+    protected virtual string FarEnd => "the device";
+
+    /// <summary>
+    /// Send, and let the device's refusal — if there is one — be the answer.
+    ///
+    /// <para>
+    /// <b>One at a time, per connection.</b> Most of these protocols carry nothing in a refusal that could
+    /// attribute it to a command, so the only thing that can is that there is exactly one command it could
+    /// belong to. Drivers whose replies <i>are</i> attributable still go through here: the cost is a queue
+    /// on a device nobody is pressing two buttons on at once, and the gain is one implementation.
+    /// </para>
+    /// </summary>
+    /// <param name="tag">
+    /// Whatever <c>OnLine</c> will need to recognise this command's answer — see <see cref="Turn.Tag"/>.
+    /// </param>
+    protected async Task<CommandResult> SendAndHearAsync(string line, CancellationToken ct, object? tag = null)
+    {
+        await _turnLock.WaitAsync(ct);
+        var turn = new Turn(tag);
+        Volatile.Write(ref _inFlight, turn);
+        try
+        {
+            if (await SendResultAsync(line, ct) is { Ok: false } failed) return failed;
+
+            var verdict = await turn.Verdict.Task.WaitAsync(Objects, ct);
+            return verdict is null ? CommandResult.Success() : CommandResult.Fail(verdict);
+        }
+        catch (TimeoutException) { return NothingSaid(turn); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        finally
+        {
+            Volatile.Write(ref _inFlight, null);
+            _turnLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// A command that was in flight when the connection went has no verdict coming, so it is answered
+    /// here and it says honestly that it does not know.
+    ///
+    /// <para>
+    /// <b>This lives in the base class rather than in <see cref="OnDisconnected"/>, and that is the whole
+    /// point of it being here.</b> The obvious place to put it is a driver's own <c>OnDisconnected</c>, and
+    /// that is where the first one was written — but two of the five drivers already override that method
+    /// to forget state and do not chain to <c>base</c>, so a sixth driver clearing a state key would
+    /// silently take this back and spend its whole window returning success on a dropped socket. Nothing
+    /// would report it: the state is right, the wait is the documented length, and the answer is the
+    /// documented answer for silence. Written here, it cannot be forgotten by a driver that never knew
+    /// about it.
+    /// </para>
+    /// <para>
+    /// <b>Why not a success.</b> A device that legitimately drops the connection while carrying out what it
+    /// was told — a reboot, a power-off that takes the network interface with it — does exist, and for that
+    /// one this is pessimistic. But the sentence does not claim a failure either: it says the outcome is
+    /// unknown, which is true in both cases, and the far commoner cause is the other one. These are single
+    /// long-lived sessions, and several of these devices accept exactly one of them, so a second app on the
+    /// network taking the session drops ours mid-command with no relationship to what was sent.
+    /// </para>
+    /// </summary>
+    void NoVerdictIsComing() =>
+        Volatile.Read(ref _inFlight)?.Refused(
+            $"The connection to {FarEnd} dropped before it answered, so whether {Name} took that is unknown.");
+
     async Task RunAsync()
     {
         while (!_cts.IsCancellationRequested)
@@ -268,6 +412,8 @@ public abstract class LineDevice : DeviceBase
                 _stream = null;
                 SetState("online", "false");
                 Diag.Close(DeviceId, _transport.Kind);
+                // Before the driver's own cleanup, and not inside it — see NoVerdictIsComing.
+                NoVerdictIsComing();
                 try { OnDisconnected(); } catch { /* a driver's own cleanup must not stop the retry */ }
             }
 
@@ -316,6 +462,9 @@ public abstract class LineDevice : DeviceBase
     public override ValueTask DisposeAsync()
     {
         _cts.Cancel();
+        // Anything still waiting on a verdict is answered before the socket goes, so a disposal can never
+        // be the thing a command is waiting on. See CLAUDE.md on disposers that await their own teardown.
+        NoVerdictIsComing();
         _cts.Dispose();
         _writeLock.Dispose();
         return ValueTask.CompletedTask;

@@ -222,7 +222,7 @@ internal sealed class LutronDevice : TcpLineDevice
     /// tool takes a fade as an argument, and going through <c>ExecuteAsync("power_off")</c> would silently
     /// use the device's own setting instead.
     /// <para>
-    /// It goes through <see cref="SendAndHearAsync"/> like every other command, which is what lets the tool
+    /// It goes through <see cref="LineDevice.SendAndHearAsync"/> like every other command, which is what lets the tool
     /// above name a load that refused. It used to be a bare <c>SendResultAsync</c>, so it answered
     /// <c>Ok</c> whenever the socket was up.
     /// </para>
@@ -253,7 +253,7 @@ internal sealed class LutronDevice : TcpLineDevice
         if (Refusal(line) is { } refused)
         {
             SetState("lastError", refused);
-            Volatile.Read(ref _pending)?.Verdict.TrySetResult(refused);
+            InFlight?.Refused(refused);
             return;
         }
 
@@ -263,9 +263,9 @@ internal sealed class LutronDevice : TcpLineDevice
         if (parts.Length < 3 || parts[0] != _id || parts[1] != "1") return;
 
         // The processor talking about *this* load, which is the only positive acknowledgement this protocol
-        // has. It ends the wait early; see Pending for what that is and is not worth. A malformed level is
+        // has. It ends the wait early; see Objects for what that is and is not worth. A malformed level is
         // still the processor answering, so this comes before the parse rather than after it.
-        Volatile.Read(ref _pending)?.Verdict.TrySetResult(null);
+        InFlight?.Took();
 
         if (!double.TryParse(parts[2], System.Globalization.CultureInfo.InvariantCulture, out var level)) return;
 
@@ -284,8 +284,22 @@ internal sealed class LutronDevice : TcpLineDevice
     /// <para>
     /// <b>The whole of a Lutron refusal is <c>~ERROR,&lt;n&gt;</c>, and it does not carry the integration
     /// id.</b> There is no echo of what was refused, no sequence number and no transaction id anywhere in
-    /// the integration protocol — so nothing in the message itself can attribute it to a command. That is
-    /// what forces the positional correlation in <see cref="Pending"/>.
+    /// the integration protocol — so nothing in the message itself can attribute it to a command.
+    /// </para>
+    /// <para>
+    /// <b>That is what forces the correlation to be positional</b>, which is why nothing is put in
+    /// <see cref="LineDevice.Turn.Tag"/> here: the only thing that can attribute a refusal to a command is
+    /// that there is exactly one command it could belong to, and the base class allows exactly one. Each
+    /// load is its own connection to the processor, so "one in flight" is per load rather than per house,
+    /// and two loads can be sent at once without either being able to steal the other's answer.
+    /// </para>
+    /// <para>
+    /// <b>The hole that leaves, stated rather than smoothed over.</b> A <c>~OUTPUT</c> for this load raised
+    /// by somebody pressing a keypad — not by this command — would end the wait before a refusal that was
+    /// still coming, and the command would report success. It is narrow rather than absent: the dominant
+    /// refusal is <c>~ERROR,2</c>, an id the processor does not have, and an id it does not have cannot
+    /// also be sending level reports. What remains is a keypad press on a real load inside the same window
+    /// as a command that real load was going to refuse for some other reason.
     /// </para>
     /// <para>
     /// The six numbers are the ones Lutron's integration protocol document defines. The line is quoted
@@ -317,43 +331,8 @@ internal sealed class LutronDevice : TcpLineDevice
     }
 
     /// <summary>
-    /// One command in flight and the processor's verdict on it.
-    ///
-    /// <para>
-    /// <b>The correlation is positional, which is why only one may be in flight.</b> <c>~ERROR,2</c> is the
-    /// whole of a refusal — see <see cref="Refusal"/> — so the only thing that can attribute one to a
-    /// command is that there is exactly one it could belong to. Each load is its own connection to the
-    /// processor, so "one in flight" is per load rather than per house, and two loads can be sent at once
-    /// without either being able to steal the other's answer.
-    /// </para>
-    /// <para>
-    /// <b>What is being waited for is an objection.</b> The positive side exists but cannot be required:
-    /// <c>~OUTPUT,&lt;id&gt;,1,&lt;level&gt;</c> does carry the id and is a real acknowledgement, and it is
-    /// used to end the wait early — but a load already at the level it was told to go to reports nothing at
-    /// all, an integration login without monitoring rights sees none of these reports, and a long fade can
-    /// put the report well outside any window worth waiting. So silence is a success here, and the
-    /// acknowledgement only buys back the latency.
-    /// </para>
-    /// <para>
-    /// <b>The hole that leaves, stated rather than smoothed over.</b> A <c>~OUTPUT</c> for this load raised
-    /// by somebody pressing a keypad — not by this command — would end the wait before a refusal that was
-    /// still coming, and the command would report success. It is narrow rather than absent: the dominant
-    /// refusal is <c>~ERROR,2</c>, an id the processor does not have, and an id it does not have cannot
-    /// also be sending level reports. What remains is a keypad press on a real load inside the same window
-    /// as a command that real load was going to refuse for some other reason.
-    /// </para>
-    /// </summary>
-    sealed class Pending
-    {
-        /// <summary>Null when nothing was refused; the sentence to show when something was.</summary>
-        public TaskCompletionSource<string?> Verdict { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    }
-
-    Pending? _pending;
-    readonly SemaphoreSlim _turn = new(1, 1);
-
-    /// <summary>
-    /// How long to give the processor to object.
+    /// How long to give the processor to object — <see cref="LineDevice"/>'s wait, at this protocol's
+    /// number.
     /// <para>
     /// It measures one round trip on a LAN and the processor's own turnaround, and nothing else — not the
     /// fade, which is the light's business and not the processor's. A refusal is a parse or a lookup
@@ -366,42 +345,25 @@ internal sealed class LutronDevice : TcpLineDevice
     /// room that is already dark, it is why that tool addresses its loads at the same time rather than in
     /// turn.
     /// </para>
+    /// <para>
+    /// <b>Silence is left a success</b>, which is <see cref="LineDevice.NothingSaid"/>'s default. The
+    /// positive side exists but cannot be required: <c>~OUTPUT,&lt;id&gt;,1,&lt;level&gt;</c> does carry
+    /// the id and is a real acknowledgement, and <see cref="OnLine"/> uses it to end the wait early — but a
+    /// load already at the level it was told to go to reports nothing at all, an integration login without
+    /// monitoring rights sees none of these reports, and a long fade can put the report well outside any
+    /// window worth waiting. So the acknowledgement only buys back the latency.
+    /// </para>
     /// </summary>
-    internal static readonly TimeSpan Objects = TimeSpan.FromMilliseconds(750);
-
-    /// <summary>Send, and let the processor's refusal — if there is one — be the answer.</summary>
-    async Task<CommandResult> SendAndHearAsync(string line, CancellationToken ct)
-    {
-        await _turn.WaitAsync(ct);
-        var pending = new Pending();
-        Volatile.Write(ref _pending, pending);
-        try
-        {
-            if (await SendResultAsync(line, ct) is { Ok: false } failed) return failed;
-
-            var refused = await pending.Verdict.Task.WaitAsync(Objects, ct);
-            return refused is null ? CommandResult.Success() : CommandResult.Fail(refused);
-        }
-        // A processor that said nothing did not refuse. See Objects: silence is the common case here, and
-        // reading it as a failure would put a red step in an activity that has always worked.
-        catch (TimeoutException) { return CommandResult.Success(); }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        finally
-        {
-            Volatile.Write(ref _pending, null);
-            _turn.Release();
-        }
-    }
+    protected override TimeSpan Objects => TimeSpan.FromMilliseconds(750);
 
     /// <summary>
-    /// A command that was in flight when the connection went has no verdict coming. Waiting the window out
-    /// and then calling it a success would be the same false success this driver was fixed for, one layer
-    /// further out — so it is answered here instead, and it says honestly that it does not know.
+    /// What the sentence names when the socket goes out from under a command in flight. That answer now
+    /// comes from <see cref="LineDevice"/> itself, for every line driver, rather than from this one's
+    /// <c>OnDisconnected</c> — which is where it was written first, and which two of the five drivers
+    /// override without chaining.
     /// </summary>
-    protected override void OnDisconnected() =>
-        Volatile.Read(ref _pending)?.Verdict.TrySetResult(
-            $"The connection to the processor dropped before it answered, so whether {Name} took that is "
-            + "unknown.");
+    protected override string FarEnd => "the processor";
+
 
     string Fade => _fade.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
 
