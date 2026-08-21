@@ -220,6 +220,37 @@ public abstract class LineDevice : DeviceBase
     /// <summary>One message from the device, with the delimiter stripped. Never called with an empty line.</summary>
     protected abstract void OnLine(string line);
 
+    /// <summary>
+    /// One read from the device, decoded, handed over <b>before anything is framed</b> — so it includes
+    /// bytes that will never complete a message, and it includes them at the moment they arrive rather
+    /// than when something later finally terminates them.
+    ///
+    /// <para>
+    /// <b><see cref="OnLine"/> is the route, and this is not a second one.</b> Every byte handed here is
+    /// also handed to <c>OnLine</c> as soon as it completes a message, so a driver that acts on something
+    /// in both places acts on it twice. Override this only for content the protocol never terminates, and
+    /// leave everything the delimiter does frame to <c>OnLine</c>.
+    /// </para>
+    /// <para>
+    /// <b>Why it has to exist at all, in one case that is not hypothetical.</b> A telnet prompt normally
+    /// carries no terminator — <c>login: </c>, and then nothing until the far end has something to say. A
+    /// device that stops there stops for ever as far as <c>OnLine</c> is concerned: the bytes sit in the
+    /// pending buffer, no delimiter ever arrives, and the one thing the device has told you is the one
+    /// thing a line-framed reader cannot see. <c>Remaestro.Drivers.Lutron</c> reads a refused integration
+    /// login exactly there.
+    /// </para>
+    /// <para>
+    /// <b>Chunk boundaries are the network's and not the protocol's.</b> One read can carry half a token
+    /// and the next the other half, so a driver looking for something here accumulates rather than
+    /// matching per call — and bounds what it accumulates, since nothing else does.
+    /// </para>
+    /// <para>
+    /// Called on the read loop, in order, one read at a time. Throwing from here drops the connection and
+    /// retries, the same as a read failure.
+    /// </para>
+    /// </summary>
+    protected virtual void OnRead(string text) { }
+
     /// <summary>Called when the connection drops, so a driver can forget state it can no longer vouch for.</summary>
     protected virtual void OnDisconnected() { }
 
@@ -431,7 +462,11 @@ public abstract class LineDevice : DeviceBase
         {
             var read = await stream.ReadAsync(buffer, ct);
             if (read == 0) break;                       // the device closed the connection
-            pending.Append(Wire.GetString(buffer, 0, read));
+            var arrived = Wire.GetString(buffer, 0, read);
+
+            // Before framing, so a driver can see bytes that will never be framed at all — see OnRead.
+            OnRead(arrived);
+            pending.Append(arrived);
 
             // One read can carry several messages, or half of one — hand over only whole ones.
             var whole = 0;

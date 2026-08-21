@@ -1,3 +1,4 @@
+using System.Text;
 using Remaestro.Sdk;
 
 namespace Remaestro.Drivers.Lutron;
@@ -228,23 +229,187 @@ internal sealed class LutronDevice : TcpLineDevice
     /// </para>
     /// </summary>
     internal Task<CommandResult> OffAsync(double fadeSeconds, CancellationToken ct) =>
-        SendAndHearAsync(
-            $"#OUTPUT,{_id},1,0,{fadeSeconds.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}", ct);
+        RefusedLogin() is { } refused
+            ? Task.FromResult(refused)
+            : SendAndHearAsync(
+                $"#OUTPUT,{_id},1,0,{fadeSeconds.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}", ct);
 
-    /// <summary>The processor prompts with "login:" and "password:" and expects bare lines back.</summary>
+    /// <summary>
+    /// The processor prompts with <c>login:</c> and <c>password:</c> and expects bare lines back.
+    ///
+    /// <para>
+    /// <b>It does not wait to be asked, and that is deliberate rather than left over.</b> A processor that
+    /// takes the login must behave exactly as it did before this was written, and waiting for a prompt
+    /// before answering it would put a round trip — and, on a processor that does not prompt the way this
+    /// driver expects, a whole timeout — in front of every reconnection. Whether the credentials were taken
+    /// is read afterwards, off the bytes the processor sends anyway; see <see cref="OnRead"/>.
+    /// </para>
+    /// <para>
+    /// A fresh connection is a fresh session, so everything the last one established is dropped here.
+    /// This runs before the read loop starts, so nothing can be watching while it does.
+    /// </para>
+    /// </summary>
     protected override async Task OnConnectedAsync(CancellationToken ct)
     {
+        _greeting.Clear();
+        _watchingGreeting = true;
+        _loginRefused = null;
+
         await SendLineAsync(_user, ct);
         await SendLineAsync(_pass, ct);
         if (_id.Length > 0) await SendLineAsync($"?OUTPUT,{_id},1", ct);
     }
 
-    protected override void OnLine(string line)
+    // ---- the integration login, which nothing used to check -------------------------------------------
+
+    /// <summary>The processor's login prompt, which is the one token this check turns on.</summary>
+    const string LoginPrompt = "login:";
+
+    /// <summary>
+    /// How much of a connection's opening conversation is held while watching for a refusal. A refusal is
+    /// the processor's answer to the one set of credentials this driver ever sends, so it is in the first
+    /// exchange or it is not coming; the budget is here so that a processor which never refuses cannot
+    /// grow this without bound, and it is generous rather than tuned.
+    /// </summary>
+    const int GreetingBudget = 4096;
+
+    /// <summary>
+    /// The opening conversation so far, while it is still being watched. Touched only from the read loop
+    /// and from <see cref="OnConnectedAsync"/>, which runs before the read loop for that connection starts
+    /// and after the previous one has ended.
+    /// </summary>
+    readonly StringBuilder _greeting = new();
+    bool _watchingGreeting;
+
+    /// <summary>
+    /// What to tell whoever pressed the key, once the processor has said the credentials were not taken —
+    /// null until it has. Read from command threads, written from the read loop.
+    /// </summary>
+    volatile string? _loginRefused;
+
+    /// <summary>
+    /// Reading the processor's opening conversation for the one thing it says when it will not have us.
+    ///
+    /// <para>
+    /// <b>The defect.</b> <see cref="OnConnectedAsync"/> writes a username and a password and nothing
+    /// anywhere looked at what came back. With the wrong integration password the processor takes the
+    /// connection, prompts for a login again, and ignores every command sent down it — <i>silently</i>:
+    /// there is no <c>~ERROR</c> for this, so a command spends its window hearing nothing and
+    /// <see cref="LineDevice.NothingSaid"/> turns that into a success. Every light in the house then
+    /// reports as having done what it was told, for ever. <c>LineDevice</c> has also marked the device
+    /// online by this point — it does that before it calls <c>OnConnectedAsync</c> — so nothing on any
+    /// surface disagreed either.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Why this reads bytes rather than lines, and why that is the part that makes it correct.</b>
+    /// <b>Nobody here has a processor</b>, so how a Lutron prompt is framed is not a thing this change is
+    /// allowed to assume. A telnet prompt normally carries no terminator, and
+    /// <see cref="LineDevice"/> frames strictly on <see cref="LineDevice.Terminator"/> — so under that
+    /// reading the refusal is a handful of bytes that sit in the pending buffer and are followed by nothing
+    /// at all, which is precisely the shape <see cref="OnLine"/> cannot ever be told about. Under the other
+    /// reading the same words arrive as ordinary lines. <b>The bytes are the same either way</b>, and they
+    /// are what this looks at, which is the whole of why it does not have to know which reading is right.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>The rule: a second login prompt on one connection.</b> The processor prompts for a login once
+    /// when the session opens. This driver answers it once. So a second prompt cannot be the greeting and
+    /// cannot be an answer to anything else — there is nothing else. It is timing-independent, which
+    /// matters because the credentials go out without waiting for the first prompt: counting prompts
+    /// against what we have sent would depend on which arrived first, and counting them against each other
+    /// does not.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Nothing here establishes the opposite, and it is not for want of trying.</b> The obvious positive
+    /// signal is the ready prompt — <c>GNET&gt;</c> on RadioRA 2, which is the one this driver's own line
+    /// filter names. It is not the same word on every processor this driver claims, there is no capture of
+    /// any of them in this tree, and a check that required the wrong one would refuse to believe a
+    /// processor that was working perfectly. So the driver acts on the refusal alone. <b>The rule, rather
+    /// than a list of what the alternative might be:</b> anything that is not a second login prompt leaves
+    /// this session exactly where it stood before this method existed — no claim, no mark, and every
+    /// command behaving as it did.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>And an accepted login is not an authorised one.</b> Monitoring rights are granted separately, and
+    /// a login accepted without them takes commands and reports nothing back — which is
+    /// <see cref="Objects"/>'s silence and stays a success. Nothing in the integration protocol tells a
+    /// right this session lacks from a thing the processor simply had nothing to say about, so this cannot
+    /// be widened into a check that does.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>The prompt is matched with its colon, where <see cref="WithoutPrompts"/> matches the bare
+    /// word.</b> The two want opposite leniencies: throwing away a prompt that turns out not to be one
+    /// costs nothing, and accusing a household of a wrong password because a banner happened to use the
+    /// word costs a support call. So this one is the strict reading.
+    /// </para>
+    /// </summary>
+    protected override void OnRead(string text)
     {
-        // Prompts come through as lines too; they aren't errors and aren't data.
-        if (line.StartsWith("login", StringComparison.OrdinalIgnoreCase) ||
-            line.StartsWith("password", StringComparison.OrdinalIgnoreCase) ||
-            line.StartsWith("GNET", StringComparison.Ordinal)) return;
+        if (!_watchingGreeting) return;
+
+        _greeting.Append(text);
+
+        if (Occurrences(_greeting.ToString(), LoginPrompt) >= 2)
+        {
+            StopWatching();
+
+            // Said in the driver's own words and pointed at the setting to go and look at, because the
+            // processor's way of saying this is to say nothing. It reaches a person twice: as the answer
+            // any command gets from here on, and — since the device is connected and therefore online —
+            // as the card's own "Something's wrong", which is what that state is for.
+            var why = $"{Name}: the processor asked for a login a second time after this hub had sent the "
+                    + "username and password, which is how it says they weren't taken. The connection is "
+                    + "up and everything sent over it is being ignored. Check this device's Username and "
+                    + "Password against the integration login set on the processor.";
+
+            _loginRefused = why;
+            SetState("lastError", why);
+            return;
+        }
+
+        if (_greeting.Length > GreetingBudget) StopWatching();
+    }
+
+    void StopWatching()
+    {
+        _watchingGreeting = false;
+        _greeting.Clear();
+    }
+
+    static int Occurrences(string text, string token)
+    {
+        var found = 0;
+        for (var at = text.IndexOf(token, StringComparison.OrdinalIgnoreCase); at >= 0;
+             at = text.IndexOf(token, at + token.Length, StringComparison.OrdinalIgnoreCase)) found++;
+        return found;
+    }
+
+    /// <summary>
+    /// The answer a command gets once the processor has said it will not have this login — or null while
+    /// it has not.
+    /// <para>
+    /// Sending anyway is the bug: a command written down a session the processor is ignoring hears
+    /// nothing, and silence on this protocol is a success. So it is answered here instead, with the
+    /// sentence rather than with a shrug.
+    /// </para>
+    /// </summary>
+    CommandResult? RefusedLogin() => _loginRefused is { } why ? CommandResult.Fail(why) : null;
+
+    protected override void OnLine(string raw)
+    {
+        // Prompts reach this method too, and stripping them is not the same as discarding the line they
+        // came on — which is what this did, and which is the second half of not knowing how they are
+        // framed. If the processor terminates its prompts, a prompt arrives alone, nothing is left behind
+        // it and this returns exactly where the discard did. If it does not, then the first thing it ever
+        // terminates is the prompts with a real message glued to the end of them — the connect-time query's
+        // own answer, on the very first line — and a discard threw that away along with them. One line
+        // covers both readings; neither is assumed.
+        var line = WithoutPrompts(raw);
+        if (line.Length == 0) return;
 
         // The processor's own refusal. This driver has recognised `~ERROR` since it was written and has
         // always put it in a state key, while the command had already answered success on the write going
@@ -275,6 +440,53 @@ internal sealed class LutronDevice : TcpLineDevice
         SetState("power", power);
         Emit("brightness.changed", new Dictionary<string, string> { ["brightness"] = pct.ToString() });
         Emit("power.changed", new Dictionary<string, string> { ["power"] = power });
+    }
+
+    /// <summary>The words a Lutron processor prompts with. Nothing else in this protocol begins with them.</summary>
+    static readonly string[] PromptWords = ["login", "password", "GNET"];
+
+    /// <summary>
+    /// A line with any run of prompts taken off the front of it, and whatever the processor actually said
+    /// left behind. Empty when the line was nothing but prompts.
+    ///
+    /// <para>
+    /// <b>It eats a prompt word and the punctuation a prompt wears, and stops.</b> A prompt word followed
+    /// by anything else — a banner, a word this driver has not thought of — is left whole rather than
+    /// guessed at, so the strict direction here is "strip less". That is safe in a way the old discard was
+    /// not: the only remainders this method's caller acts on begin with <c>~ERROR</c> or <c>~OUTPUT,</c>,
+    /// neither of which can be produced by under-stripping, while over-discarding threw a real message
+    /// away.
+    /// </para>
+    /// <para>
+    /// Case is the processor's business and folding it costs nothing, since no line this driver reads
+    /// begins with any of these words in any case.
+    /// </para>
+    /// </summary>
+    internal static string WithoutPrompts(string line)
+    {
+        var rest = line.AsSpan().TrimStart();
+
+        while (rest.Length > 0)
+        {
+            var word = "";
+            foreach (var candidate in PromptWords)
+                if (rest.StartsWith(candidate, StringComparison.OrdinalIgnoreCase)) { word = candidate; break; }
+
+            if (word.Length == 0) break;
+
+            var after = rest[word.Length..];
+            var eaten = 0;
+            while (eaten < after.Length && after[eaten] is ':' or '>' or ' ' or '\t') eaten++;
+
+            // The word on its own, ending the line, is still a prompt — a processor that writes `login`
+            // with no colon has said the same thing. A word with real text behind it has not, and is left
+            // alone.
+            if (eaten == 0 && after.Length > 0) break;
+
+            rest = after[eaten..].TrimStart();
+        }
+
+        return rest.ToString();
     }
 
     /// <summary>
@@ -397,6 +609,10 @@ internal sealed class LutronDevice : TcpLineDevice
 
     public override async Task<CommandResult> ExecuteAsync(string commandId, IReadOnlyDictionary<string, string> args, CancellationToken ct)
     {
+        // Before anything is sent, and before `raw` too: a session the processor has refused ignores every
+        // one of these equally, and it is `raw` whose content this driver knows least about.
+        if (RefusedLogin() is { } refused) return refused;
+
         if (commandId == "raw")
         {
             var raw = args.GetValueOrDefault("command", "").Trim();
