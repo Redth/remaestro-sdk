@@ -537,7 +537,7 @@ Recommended standard events: `library.play`, `library.queue`, `library.resume`, 
 ## 6. Rollout
 
 1. ✅ **SDK contract + models** (`INavigableDevice`, `LibraryNode`, `NodeListing`, `ImageRef`, `ItemCommand`,
-   `BrowseOptions`) — the surface drivers implement. → `src/Remaestro.Sdk/Navigation.cs`
+   `BrowseOptions`) — the surface drivers implement. → `sdk/dotnet/src/Remaestro.Sdk/Navigation.cs`
 2. ✅ **gRPC** nav rpcs + `DriverHost` serving them (no-op when a device isn't `INavigableDevice`).
    → `driver.proto` (`Browse`/`GetNode`/`SearchNodes`/`InvokeItem`, `supports_navigation`), `DriverHost.cs`
 3. ✅ **Hub** `NavigationService` + `/api/nav/*` endpoints; `InvokeItem`'s emitted event flows to the bus over

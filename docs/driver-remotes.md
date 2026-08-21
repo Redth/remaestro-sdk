@@ -88,6 +88,31 @@ device's real command, which is what lets the same layout be retargeted when an 
 discretely (`input.hdmi1`, `input.tuner`) and no real receiver's source list is any of them.
 `input.select` + `{["input"] = "GAME"}` is one source key; `app.launch` + `{["app"] = "12"}` is one app key.
 
+### `Icon`, and a picture of your own
+
+`Icon` takes a `Glyph` spec, and **the first answer is `ti:<name>`** — about 5,800 bundled Tabler line
+glyphs, drawn in the theme's ink on all three surfaces. Most drivers should stop here; most of what ends up
+on a key comes from `CommandVocabulary` and needs no `Icon` at all.
+
+**A plugin** — a driver installed from a package rather than shipped in this repo — may also name a picture
+it bundled:
+
+```csharp
+Icon: "plugin:power.svg"          // ← assets/power.svg, inside your own package
+```
+
+- A **path**, and nothing else. Not a plugin id, not a URL: every other part of the address is the hub's.
+  A template can never name an address, which is what keeps the privacy pages' enumeration of outside
+  parties finite and true.
+- Pictures only, up to **32 KiB** a file and **256 KiB** a plugin. **No fonts** — the licensing is real, and
+  refusing is the whole of the position. **No sounds** — nothing anywhere plays one.
+- A file that is missing, oversized, or of a kind a plugin may not ship draws a photo placeholder and logs a
+  sentence naming you and the file. It never draws blank.
+- An SVG using `currentColor` will be near-black on every theme, because an image has no colour to inherit.
+  If you want a shape that follows the theme, you want a `ti:` name.
+
+The whole of it, and the reasoning: [`docs/plugins/template-resources.md`](plugins/template-resources.md).
+
 ---
 
 ## The rules that matter
