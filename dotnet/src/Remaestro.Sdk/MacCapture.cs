@@ -304,6 +304,60 @@ public static class MacCapture
             && int.TryParse(cell.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out var f) ? f : 0;
     }
 
+    /// <summary>
+    /// The other direction: every address the table currently holds this MAC at.
+    /// <para>
+    /// <see cref="InTable"/> answers <i>what is at this address</i>, which is what a driver asks when it
+    /// wants to wake something it can already reach. This answers <i>where has this thing gone</i>, which
+    /// is what gets asked about a device that has stopped answering where it was left. A stored MAC is the
+    /// only anchor a device already has before anybody decided to record an identity for it, so it is the
+    /// only one that reaches backwards to a device that is already broken.
+    /// </para>
+    /// <para>
+    /// <b>A list, and that is the point of the signature.</b> A neighbour table may hold one MAC at two
+    /// addresses perfectly legitimately — an expiring lease beside the new one is the ordinary case, and it
+    /// is exactly the case this will be called during. Returning the first would be a coin toss dressed as
+    /// a fact. A caller that needs certainty can see that there were two and refuse; a caller handed one
+    /// address has been told something the table actually knows.
+    /// </para>
+    /// <para>
+    /// Same flags rule and same <see cref="Normalise"/> as <see cref="InTable"/>: an entry the kernel has
+    /// asked about and not had answered carries all zeroes, and is not an answer about anybody. Order is
+    /// the table's own rather than one imposed here.
+    /// </para>
+    /// </summary>
+    /// <param name="table">The neighbour table as text, or null where there is no such thing to read.</param>
+    /// <param name="mac">What is being looked for, in any spelling <see cref="Normalise"/> accepts.</param>
+    public static IReadOnlyList<IPAddress> AddressesFor(string? table, string? mac)
+    {
+        if (string.IsNullOrEmpty(table)) return [];
+        if (Normalise(mac) is not { } wanted) return [];
+
+        var found = new List<IPAddress>();
+
+        foreach (var line in table.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var cells = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (cells.Length < 4) continue;
+
+            // ATF_COM, as above — anything else is a question in flight, and the address it names is a
+            // guess about somebody who has not spoken.
+            if ((TableFlags(cells[2]) & 0x2) == 0) continue;
+            if (Normalise(cells[3]) != wanted) continue;
+
+            // The header row survives the cell count on some kernels; a first cell that is not an address
+            // is not an answer. One address twice in one table is the same fact twice, not two places.
+            if (!IPAddress.TryParse(cells[0], out var address)) continue;
+            if (!found.Any(a => a.Equals(address))) found.Add(address);
+        }
+
+        return found;
+    }
+
+    static int TableFlags(string cell) =>
+        cell.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+        && int.TryParse(cell.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out var f) ? f : 0;
+
     /// <summary>The subnets this machine is actually on, read off its own interfaces.</summary>
     /// <remarks>
     /// Looked up every time rather than cached. A hub on an appliance outlives DHCP leases, cables and
@@ -410,5 +464,31 @@ public sealed class Neighbourhood(Func<IReadOnlyList<Segment>> ours, Func<string
         {
             return MacFinding.None($"'{host}' doesn't resolve to an address on this network.");
         }
+    }
+
+    /// <summary>
+    /// Where this MAC is now, as far as this machine's own table knows — the reverse of <see cref="At"/>,
+    /// and filtered to the segments this machine is actually on.
+    /// <para>
+    /// The filter is not tidying. An address outside our segments is one this machine reached through a
+    /// router, so the MAC in the table against it is the router's and not the device's; without the filter
+    /// this would confidently return the gateway for every device that has ever been talked to off-net.
+    /// <see cref="At"/> refuses that case in words, and this refuses it by omission, because there is no
+    /// single address here to say it about.
+    /// </para>
+    /// <para>
+    /// Empty means "not in this machine's table", which is the ordinary answer for a device nothing has
+    /// spoken to recently — it is a fact about our table and never a fact about the device. Something has
+    /// to provoke a reply before an entry exists at all.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<IPAddress> Holding(string? mac)
+    {
+        if (table() is not { } text) return [];
+
+        var segments = ours();
+        return MacCapture.AddressesFor(text, mac)
+            .Where(a => MacCapture.Within(a, segments))
+            .ToList();
     }
 }
