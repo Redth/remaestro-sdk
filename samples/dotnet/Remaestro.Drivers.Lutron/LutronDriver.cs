@@ -368,6 +368,14 @@ internal sealed class LutronDevice : TcpLineDevice
 
             _loginRefused = why;
             SetState("lastError", why);
+
+            // And the command that raced the login, if there is one. `LineDevice` marks the device online
+            // *before* it calls `OnConnectedAsync`, so a command sent the moment a light comes back — an
+            // activity firing after a processor reboot, or after one of the five-second retries — is
+            // already waiting while these bytes are arriving. Without this it spends its window hearing
+            // nothing and takes the success that silence means here, which is the bug being fixed, one
+            // command narrower. The same hand-off `OnLine` makes for a `~ERROR`, for the same reason.
+            InFlight?.Refused(why);
             return;
         }
 
