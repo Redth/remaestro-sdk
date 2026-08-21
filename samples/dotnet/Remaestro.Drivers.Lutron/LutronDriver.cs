@@ -294,12 +294,40 @@ internal sealed class LutronDevice : TcpLineDevice
     /// and two loads can be sent at once without either being able to steal the other's answer.
     /// </para>
     /// <para>
-    /// <b>The hole that leaves, stated rather than smoothed over.</b> A <c>~OUTPUT</c> for this load raised
-    /// by somebody pressing a keypad — not by this command — would end the wait before a refusal that was
-    /// still coming, and the command would report success. It is narrow rather than absent: the dominant
-    /// refusal is <c>~ERROR,2</c>, an id the processor does not have, and an id it does not have cannot
-    /// also be sending level reports. What remains is a keypad press on a real load inside the same window
-    /// as a command that real load was going to refuse for some other reason.
+    /// <b>The hole that leaves, stated rather than smoothed over.</b> <see cref="OnLine"/> ends the wait on
+    /// <i>any</i> <c>~OUTPUT</c> for this load, and nothing in that line says which command it belongs to —
+    /// so a report raised by something other than the command in flight ends the wait before a refusal that
+    /// was still coming, and the command reports success. <b>Hold the rule rather than the list</b>, because
+    /// the rule is what a source nobody has thought of would also satisfy: <i>anything at all that makes the
+    /// processor talk about this load</i>. Three are known.
+    /// </para>
+    /// <para>
+    /// <b>A keypad press</b> on this load, by a person, inside the window.
+    /// </para>
+    /// <para>
+    /// <b>This driver's own connect-time query, which is the one that is easy to miss because it is
+    /// ours.</b> <see cref="OnConnectedAsync"/> sends <c>?OUTPUT,&lt;id&gt;,1</c> every time the connection
+    /// comes up, and the answer to it is a <c>~OUTPUT</c> for this exact load that no command asked for. The
+    /// window it can land in is real rather than theoretical: <see cref="LineDevice"/> marks the device
+    /// online <i>before</i> it calls <c>OnConnectedAsync</c>, so a command sent the moment a light comes
+    /// back — an activity firing after a processor reboot, or after any of the five-second retries — is
+    /// waiting while that answer is still on its way.
+    /// </para>
+    /// <para>
+    /// <b>An earlier command's own report, arriving late.</b> <see cref="Objects"/> below already says the
+    /// half of this that matters: a long fade puts a load's level report well outside the window of the
+    /// command that caused it. Commands are one at a time, so the window it lands in instead is the next
+    /// command's.
+    /// </para>
+    /// <para>
+    /// All three are narrow, and narrowed the same way — how narrow each one is has not been measured
+    /// and they are not obviously alike, so do not read the shared narrowing as a shared size. The
+    /// dominant refusal is <c>~ERROR,2</c>, an id the processor does not have — and an id it does not have
+    /// is not sending level reports for itself either, by a keypad or by our query or behind a fade. What
+    /// remains in every case is a real load, reported on by something other than the command in flight,
+    /// refusing that command for one of the other five reasons. This driver's own clamping precludes most of
+    /// those on the light commands; it precludes none of them on <c>raw</c>, whose content it knows nothing
+    /// about.
     /// </para>
     /// <para>
     /// The six numbers are the ones Lutron's integration protocol document defines. The line is quoted
