@@ -164,12 +164,16 @@ Four drivers that ship in the product, picked because each one shows a different
 
 | Sample | Lines | What it shows |
 |---|---|---|
-| **[`Remaestro.Drivers.Http`](samples/dotnet/Remaestro.Drivers.Http)** | 189 | The smallest useful driver. `DeviceBase` plus an `HttpClient` — start here. |
-| **[`Remaestro.Drivers.Lutron`](samples/dotnet/Remaestro.Drivers.Lutron)** | 159 | `TcpLineDevice`: a text line protocol over a socket, with reconnection handled for you. |
-| **[`Remaestro.Drivers.Screen`](samples/dotnet/Remaestro.Drivers.Screen)** | 410 | `ByteLink`: a **binary** protocol — five bytes at 2400 baud over RS-232 — and a device that is strictly write-only. Worth reading for how it declines to invent a position it cannot measure. |
-| **[`Remaestro.Drivers.Jellyfin`](samples/dotnet/Remaestro.Drivers.Jellyfin)** | 1004 | The large end: `INavigableDevice` for a browsable media library, plus `ListenerSupervisor`. |
+| **[`Remaestro.Drivers.Http`](samples/dotnet/Remaestro.Drivers.Http)** | 191 | The smallest useful driver. `DeviceBase` plus an `HttpClient` — start here. |
+| **[`Remaestro.Drivers.Lutron`](samples/dotnet/Remaestro.Drivers.Lutron)** | 447 | `TcpLineDevice`: a text line protocol over a socket, with reconnection handled for you. |
+| **[`Remaestro.Drivers.Screen`](samples/dotnet/Remaestro.Drivers.Screen)** | 421 | `ByteLink`: a **binary** protocol — five bytes at 2400 baud over RS-232 — and a device that is strictly write-only. Worth reading for how it declines to invent a position it cannot measure. |
+| **[`Remaestro.Drivers.Jellyfin`](samples/dotnet/Remaestro.Drivers.Jellyfin)** | 1192 | The large end: `INavigableDevice` for a browsable media library, plus `ListenerSupervisor`. |
 
 They are the real files, not reductions. Each is a directory you can copy.
+
+*Lines* is the driver's own C# without its four-line `Program.cs`. All four had drifted — Lutron's
+said 159 against a file that has not been that size for a long time — so they are worth recounting
+rather than trusting; nothing checks them.
 
 **[`samples/dotnet/README.md`](samples/dotnet/README.md) explains how a driver actually starts** — which is
 not `dotnet run`, and which is why none of these projects has a launch profile.

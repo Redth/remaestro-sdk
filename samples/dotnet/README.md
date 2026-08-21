@@ -5,10 +5,14 @@ so what you read is what runs in a house.
 
 | Sample | Lines | What it shows |
 |---|---|---|
-| **[`Remaestro.Drivers.Http`](Remaestro.Drivers.Http)** | 189 | The smallest useful driver. `DeviceBase` plus an `HttpClient`. **Start here.** |
-| **[`Remaestro.Drivers.Lutron`](Remaestro.Drivers.Lutron)** | 159 | `TcpLineDevice` — a text line protocol over a socket, with connect, reconnect and framing handled for you. |
-| **[`Remaestro.Drivers.Screen`](Remaestro.Drivers.Screen)** | 410 | `ByteLink` — a **binary** protocol, five bytes at 2400 baud over RS-232. Also worth reading for a device that is strictly write-only and declines to invent a position it cannot measure. |
-| **[`Remaestro.Drivers.Jellyfin`](Remaestro.Drivers.Jellyfin)** | 1004 | The large end: `INavigableDevice` for a browsable media library, plus `ListenerSupervisor`. |
+| **[`Remaestro.Drivers.Http`](Remaestro.Drivers.Http)** | 191 | The smallest useful driver. `DeviceBase` plus an `HttpClient`. **Start here.** |
+| **[`Remaestro.Drivers.Lutron`](Remaestro.Drivers.Lutron)** | 447 | `TcpLineDevice` — a text line protocol over a socket, with connect, reconnect and framing handled for you. |
+| **[`Remaestro.Drivers.Screen`](Remaestro.Drivers.Screen)** | 421 | `ByteLink` — a **binary** protocol, five bytes at 2400 baud over RS-232. Also worth reading for a device that is strictly write-only and declines to invent a position it cannot measure. |
+| **[`Remaestro.Drivers.Jellyfin`](Remaestro.Drivers.Jellyfin)** | 1192 | The large end: `INavigableDevice` for a browsable media library, plus `ListenerSupervisor`. |
+
+*Lines* is the driver's own C# without its four-line `Program.cs`. All four had drifted — Lutron's
+said 159 against a file that has not been that size for a long time — so they are worth recounting
+rather than trusting; nothing checks them.
 
 Each is a directory you can copy. Change the `TypeId`, the config schema and the commands, and you have a
 plugin.
