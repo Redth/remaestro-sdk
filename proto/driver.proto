@@ -490,19 +490,66 @@ message StateField {
   string description = 3;
 }
 
+// A question a form asks, in four places: a device type's config_schema, a command's parameters, an
+// assistant tool's parameters, and a media type's facts.
+//
+// **Which of these the hub enforces, and where.** Until recently the honest answer was "none of them" and
+// this file said nothing either way, which left a plugin author to infer a boundary from a form. It is
+// written down per field below, and the shape is worth stating once here because it is not symmetric:
+//
+//   • Enforcement applies to a **device type's config_schema and to nothing else.** A CommandDescriptor
+//     or AssistantToolDescriptor parameter is drawn from its declaration and never checked against it, so
+//     a command argument's `min` really is advisory. Do not read a rule below as covering all four.
+//   • Where it applies, it applies to **every writer** — the console's forms, POST /api/devices and
+//     PUT /api/devices/{id} — because the check is in the device registry rather than in a form. A
+//     refusal is a 400 carrying one sentence built from what you declared, and the field is named by its
+//     `label`, or by its `key` if the label is empty. **Declare a label you would be content to read in
+//     an error message.**
+//   • A refusal happens **before CreateDevice**. Nothing is stored, your driver is not called, and there
+//     is no partial write for a plugin to observe or undo.
+//   • Only a value that **changed** is judged, against what is already stored, and an emptied value is
+//     not judged at all. So narrowing a bound in a new version of your plugin does not make the devices
+//     somebody already has uneditable — it refuses the next edit that keeps the value out of range.
+//   • A field whose `show_when` is not satisfied is not judged, and neither is a key your schema never
+//     mentioned: transports, presets, pairing and address repair all write into the same dictionary.
 message ConfigField {
   string key = 1;
   string label = 2;
   string type = 3;             // string | number | bool | secret | multiline
+  // Drawn — an asterisk on the form — and **not enforced**: the hub will store a device with this field
+  // empty or absent.
+  //
+  // That asymmetry is deliberate rather than unfinished, and it is the one place in this message where a
+  // declaration means less than it sounds like. In practice the flag is used to mean "star this on the
+  // form" rather than "refuse the device without it", and refusing on it would overrule a driver about
+  // its own device: a driver may reasonably mark two fields required because either one is enough on its
+  // own — one to wake a console, the other to navigate it — and a device added to be woken and not
+  // navigated legitimately carries only one. **So do not read this as a promise that you will be handed
+  // a value.** If your driver cannot start without one, check for it in CreateDevice and fail with a
+  // sentence naming the field.
   bool required = 4;
   string default_value = 5;
   string help = 6;
 
   // The values this field accepts, when they're known up front.
+  //
+  // **Enforced on a device's config**, unless options_key is also set: a submitted value that is not one
+  // of these is refused, and the sentence the caller gets names the values that were offered. The form
+  // still draws a chooser with an escape to free text, and that escape does not widen what is accepted —
+  // it exists so somebody can type a value you *did* offer under a label they cannot see.
   repeated FieldOptionMessage options = 7;
   // For a list only the device can answer — the hub asks via ListOptions with this key.
+  //
+  // **Not enforced, and it suppresses the options check above.** The hub does not hold this list when a
+  // write arrives and will not call your driver mid-save to find out, so a field carrying both a key and
+  // a static list is treated as the key's: the static list is the hint you already said was incomplete.
   string options_key = 8;
   // Range for a number field. Strings so "unset" is distinguishable from zero.
+  //
+  // **Both are enforced on a device's config**, independently: declare one end and only that end is
+  // checked, and the sentence the caller gets names the end that was crossed rather than inventing the
+  // other. A value that is not a number at all is refused here too. Declaring both also picks a slider
+  // for the form, which is a separate thing from the check and needs both to be meaningful.
   string min = 9;
   string max = 10;
 

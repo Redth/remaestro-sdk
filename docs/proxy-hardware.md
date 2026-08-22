@@ -216,11 +216,12 @@ the useful part of this section.
 
 ### The agent
 
-`src/Remaestro.ProxyAgent` — a .NET console app that is **a second implementation of the board side of
-`TunnelFrame`**, exactly as §6 rule 1 asks. It dials out, says hello, serves channels, answers pings, and
-relays button presses. It holds its own copy of every wire constant rather than referencing the hub's, and a
-drift test asserts each one still matches — the same bargain the C++ firmware makes, because a constant
-shared by a compiler for the Pi and not for the board is the worst of both.
+The **`Remaestro.ProxyAgent`** project, which ships in the SDK repository — a .NET console app that is **a
+second implementation of the board side of `TunnelFrame`**, exactly as §6 rule 1 asks. It dials out, says
+hello, serves channels, answers pings, and relays button presses. It holds its own copy of every wire
+constant rather than referencing the hub's, and a drift test asserts each one still matches — the same
+bargain the C++ firmware makes, because a constant shared by a compiler for the Pi and not for the board is
+the worst of both.
 
 Why .NET and not Python or Go: the appliance is already a .NET image, and — the deciding reason — the whole
 of the protocol can then be tested in the same suite with no network and no device. `CLAUDE.md` is explicit

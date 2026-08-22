@@ -281,24 +281,63 @@ product's job is to make it legible to the person who installed you rather than 
 Open around it: there is a per-tool and per-plugin size ceiling but none on the sum across plugins on one
 surface, and there is no user-confirmation primitive on the assistant path for any tool, ours or yours.
 
-**4. Generalised `ConfigField` — partly done.** The message carries everything the audit asked for, and
-`ConfigField` is now one grammar across four contexts rather than one — device config, command parameters,
-assistant-tool parameters and media-type facts. Per field, though, what the hub actually *honours* is
-uneven, and a plugin author should know which is which before relying on one:
+**4. Generalised `ConfigField` — done, and part of it is now a boundary rather than a hint.** The message
+carries everything the audit asked for, and `ConfigField` is now one grammar across four contexts rather
+than one — device config, command parameters, assistant-tool parameters and media-type facts. What the hub
+*honours* per field is still not uniform, and three of them are now *enforced* rather than merely drawn,
+so a plugin author should know which is which before relying on one:
 
 | field | state |
 |---|---|
-| `options` | **Honoured** — a chooser, with an escape to free text. |
+| `options` | **Honoured, and enforced on device config** — a chooser with an escape to free text, and a submitted value naming an option you did not offer is refused. |
 | `managed` | **Honoured** — kept out of the create form, and shown in a group that names the owner. |
 | `show_when` | **Honoured** — genuinely conditional. One key, `=`, `\|`-ORed values; no ANDing. Hiding a field does not drop its stored value. |
 | `sensitivity` | **Honoured by the console's forms and by the API** — a declaration beats the hub's guesses and the value is never rendered back. At rest, both `SENSITIVE` and `WRITE_ONLY` are **encrypted under a key bound to the one hub**, so the database and any backup carry ciphertext. `WRITE_ONLY` still does **not** mean "not kept": the value is stored and does survive a restart, because the hub replays stored config into `CreateDevice` on every start. A backup restored onto different hardware cannot decrypt these, and the field arrives blank. |
-| `advanced` | **Half** — a disclosure in the create form, ignored in the edit form. |
-| `min` / `max` | **Advisory.** They pick a slider when the type is `number` and *both* are present, and nothing revalidates a bound on save. |
-| `options_key` | **Works for command arguments, not for config.** No config form asks for the list today. |
+| `advanced` | **Honoured, and the two forms deliberately differ.** The create form folds every advanced field away, which is safe because it has no values yet. The edit form folds one away only while it is still at its declared default — a field somebody changed on purpose is not a default, and hiding it would make the form say the device is configured one way while it is configured another. An empty value counts as at-default. |
+| `required` | **Drawn and deliberately not enforced.** It gets an asterisk on the form and nothing more. This is the one asymmetry in the table; it is a decision rather than a gap, and the reason is below. |
+| `min` / `max` | **Honoured, and enforced on device config.** They pick a slider when the type is `number` and *both* are present; separately, whichever bounds you declared reach the plain number input underneath, so a one-sided bound is drawn as well as checked. A submitted number outside a declared bound is refused. |
+| `options_key` | **Works for command arguments, and for config too.** The hub asks the device through `ListOptions` when the form is drawn. No driver in the hub's own fleet declares one on a config schema, so this road has no first-party traffic — it is yours. A device the hub cannot reach degrades to a plain box to type in rather than to an error. |
 
-**There is no hub-side validation of declared metadata** — not `required`, not a range, not membership in
-`options`. Validate your own config when you are asked to create a device; that is the boundary that holds,
-and it is the one the design intends to hold.
+**What the hub enforces, and — the part a contract owes you — what happens when it refuses.** `min`, `max`
+and `options` are checked in the device registry, so `POST /api/devices`, `PUT /api/devices/{id}` and the
+console's own forms are all behind the same check rather than each carrying their own. **This is about a
+device type's `config_schema` and nothing else**: a `CommandDescriptor.parameters` value and an
+`AssistantToolDescriptor.parameters` value are *not* checked against their declarations, so a command
+argument's `min` genuinely is advisory and none of what follows is about it.
+
+When a value is refused:
+
+- **The write does not happen and your driver is never asked.** The check runs before `CreateDevice`, so a
+  refusal is not something a plugin can observe, override, or clean up after: the device is not created, or
+  the edit is not stored, and nothing is half-written.
+- **The caller gets `400` and one sentence built out of what you declared** — *"Brightness has to be between
+  0 and 100."*, *"Port has to be 1024 or more."*, *"Flavour has to be one of: tplink, shelly."*, *"Port has
+  to be a number."* The name in that sentence is your `label`, or your `key` if you left the label empty.
+  **Declare a label you would be content to read in an error message**, because that is where it ends up.
+- **Only what changed is judged**, against what is already stored — so a value that is merely still there is
+  not re-checked. Narrowing a bound in a new version of your plugin therefore does not lock somebody out of
+  a device they already have: it stops the offending value being edited further out of range, and leaves the
+  device's *name* editable, which the stricter whole-dictionary reading would have taken away at the moment
+  somebody changed something unrelated. Clearing a field is not judged either — an empty value is not a bad
+  one.
+- **A field whose `show_when` is not satisfied is not judged.** A field the form is not asking is not one
+  anybody is answering, and a device being moved from serial to network is full of them mid-edit.
+- **A field with an `options_key` is not judged at all**, even when it also carries a static `options` list.
+  The hub does not hold that list at save time and will not call your driver mid-write to find out, so the
+  static list is treated as the hint you already said it was.
+- **Keys your schema does not mention are not rejected.** Transports, presets, pairing and address repair all
+  write into the same dictionary, so an unknown key is the ordinary case rather than the suspicious one.
+
+**`required` is declared, drawn, and not enforced — on purpose.** The hub's own fleet uses it to mean *"star
+this on the form"* rather than *"refuse to store a device without it"*, and two of its drivers say as much in
+their own help text: one marks both a console's wake identifier **and** its network address required while
+explaining that one is needed to wake the console and the other for navigation and media — so a console added
+only to be woken legitimately has one of the two, and the driver reads the other with a default and works.
+Refusing that would be the hub overruling a driver about its own device on the strength of a flag the driver
+meant as emphasis. **So do not read `required` as a promise that you will be handed a value.** If your driver
+genuinely cannot start without one, check for it in `CreateDevice` and fail with a sentence naming the field.
+That half of "validate your own config" is still yours. The range-and-membership half is no longer only yours,
+which is the sentence this section used to get wrong.
 
 **5. The `/plugins/{id}` console page — this was the only item genuinely not started, and it is built now**,
 at `/plugins/installed/{id}`. It shows one plugin at length: where it is installed and what argv is
