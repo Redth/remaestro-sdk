@@ -10,6 +10,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"net"
 	"net/url"
@@ -92,8 +93,4 @@ func listenAddress(raw string) (string, error) {
 	return net.JoinHostPort(host, port), nil
 }
 
-var errNoPort = &addressError{"no port in the address the hub gave us"}
-
-type addressError struct{ s string }
-
-func (e *addressError) Error() string { return e.s }
+var errNoPort = errors.New("no port in the address the hub gave us")
