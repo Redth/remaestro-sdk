@@ -24,6 +24,8 @@ everything you need on your side of it.
 | **[`dotnet/src/Remaestro.ProxyAgent`](dotnet/src/Remaestro.ProxyAgent)** | A reference *proxy* — the other boundary, for hardware the hub cannot reach over the network. |
 | **[`dotnet/tests`](dotnet/tests)** | A conformance suite for that proxy protocol, written as literal wire vectors so it is portable to any language. |
 | **[`samples/python`](samples/python)** | A driver in Python, generated from the proto with stock `protoc`, packaged, signed and installed the way a stranger would. Nothing in it imports anything of ours. |
+| **[`samples/go`](samples/go)** | A driver in Go — one static binary, no interpreter, no runtime. Its README carries the ten things `driver.proto` does not tell you, in the order a non-.NET author hits them. |
+| **[`samples/hello-world`](samples/hello-world)** | **Start here.** The smallest plugin that proves anything: a rubber duck that says hello and counts. Go, and published to the registry. |
 | **[`docs/driver-protocol.md`](docs/driver-protocol.md)** | **The negotiation, the capability list and the heartbeat's obligations** — the parts of the contract a plugin in another language has to implement by hand. |
 | **[`docs/plugin-manifest.schema.json`](docs/plugin-manifest.schema.json)** | **The `plugin.json` inside a plugin archive**, as a JSON Schema. The file that decides whether your plugin runs. |
 | **[`docs/`](docs)** | The specifications behind the parts of the contract that need more than a comment. |
