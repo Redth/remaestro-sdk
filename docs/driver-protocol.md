@@ -303,8 +303,11 @@ is coming.
 
 The C# SDK does all of this. Nothing else will.
 
-`samples/python/` is this checklist worked through end to end — codegen, packaging, signing, install and
-launch — with a note at each step that cost more than the line here suggests.
+Two samples are this checklist worked through end to end — codegen, packaging, signing, install and
+launch — each with a note at every step that cost more than the line here suggests.
+[`samples/python/`](../samples/python/) is an interpreter and a vendored wheel;
+[`samples/go/`](../samples/go/) is one static binary, and is the one that also *runs* itself on the
+two architectures a hub actually is, rather than on the machine that built it.
 
 - [ ] Set `protocol_version` on the descriptor to the highest `Protocol` enum value you generated.
 - [ ] Leave `min_hub_protocol` unset unless you have a reason; if you set one, it may only ever go down.
@@ -331,6 +334,20 @@ launch — with a note at each step that cost more than the line here suggests.
       hand and stopped one short of `hex`. Blot the payload **before** you truncate it for rendering — half
       a password is a shorter password, not a redacted one. `samples/python/lamp/diag.py` is the worked
       example.
+- [ ] **Never return from `StreamEvents`.** Serve it until the *hub* ends it. A driver that returns
+      cleanly loses every event, every hold and eventually its own heartbeat, and nothing reconnects and
+      nothing is logged — §7.2.
+- [ ] **Answer `GetState` with your whole state map, every time.** It replaces rather than merges. The two
+      fields beside it in the same message are the opposite rule and say so; this one is not and does not.
+- [ ] **Validate your own config.** Nothing hub-side checks a value against the schema you declared — not
+      `required`, not a range, not membership in `options`. Refuse in `CreateDeviceResponse.error`.
+- [ ] **Say a device's "no" in the response, not as a gRPC status.** `ok: false` plus `error` is the
+      device declining, and the person reads your sentence. A status code is read as the *driver* having
+      failed — §7.3.
+- [ ] Expect to be launched, asked `Describe`, and killed, before any device exists — §7.1. Keep
+      `Describe` cheap and independent of anything `CreateDevice` does.
+- [ ] Expect **no shutdown at all**: no signal, no rpc, no warning — §7.4. Anything you need to survive
+      has to be durable at the moment it is true.
 - [ ] Ship a `plugin.json` that validates against
       [`plugin-manifest.schema.json`](plugin-manifest.schema.json) — §6.
 
@@ -407,3 +424,99 @@ the schema, and saying either explicitly is what stops *we forgot* looking like 
 
 None of the looseness above is a promise to keep being true, and the registry refuses most of it. Validate
 against the schema.
+
+---
+
+## 7. The process you are launched as
+
+**Everything in this section is a fact about your process rather than about a message, which is why none of
+it is in the proto — and why the C# SDK's authors never had to learn any of it.** All of it was measured by
+`#427` while building `samples/go/`, against a real hub.
+
+### 7.1 You are started twice, and killed in between
+
+The first time a hub sees your plugin it runs a **first-run introspection sweep**: launch the process, call
+`Describe`, record the descriptor, and kill it again. Then, when something actually wants a device of your
+type, it launches you a second time.
+
+Measured — two pids, one second apart, on the first boot after an install. So:
+
+- `Describe` must be answerable **cold**, out of fields you already hold, with nothing set up. It has a 10
+  second deadline and the hub retries it for about thirty.
+- Anything expensive you do at startup is paid at least twice, and the first time is for nothing.
+- Once the descriptor is cached, later boots do **not** start you at all until a device of your type
+  exists. The cache is keyed on your declared version plus a stamp over your whole directory, so bumping
+  the version in `plugin.json` invalidates it whatever the bytes did.
+
+### 7.2 `StreamEvents` is opened once and must never return
+
+The hub calls it immediately after `Describe` and reads it for the life of the process. It does not
+reconnect, and it does not log a stream that ended.
+
+**A driver that returns cleanly from `StreamEvents` looks completely healthy.** Sabotaged and measured: end
+the stream after one frame and unary calls still work, `GetState` still answers, commands still succeed,
+diagnostics still capture, and the liveness reading is a green one second. What is gone is everything the
+stream carries — every device event, and every hold, including one published from inside a command that was
+running at the time.
+
+This is worth stating because **returning is the natural shape in most languages**: a `for` over a channel
+that closes, a generator that runs out, a callback loop whose condition goes false. In C# it is an
+`IAsyncEnumerable` that completes. Serve until the hub's own cancellation, and treat your own exit from
+that method as a bug.
+
+### 7.3 A device's refusal and a driver's failure are different answers
+
+`ExecuteCommandResponse { ok: false, error: "…" }` is **the device declining**, and your sentence is what
+the person is shown. A gRPC status is **the driver having failed**, and the hub words it that way — a
+`DEADLINE_EXCEEDED` becomes *"the driver didn't answer within 60s"*, which reads to somebody in a room as
+the hub having given up rather than as the television having said no.
+
+The deadlines are not fields on any message. They arrive as the call's own gRPC deadline, which every
+generated server surfaces on the request context, and they are: `Describe` **10 s**, an ordinary call
+(command, state, listing, browse, create) **60 s**, `pair_begin`/`pair_finish` **150 s**, `GetEpg`
+**5 min**. `StreamEvents` has none, deliberately.
+
+### 7.4 Nothing asks you to stop
+
+The hub ends a driver with `Process.Kill(entireProcessTree: true)` — `SIGKILL` on Unix. Measured with
+handlers on `SIGTERM`, `SIGINT`, `SIGHUP` and `SIGQUIT` across a full install-launch-drive-stop cycle:
+**not one of them fired, for either process.**
+
+There is no shutdown rpc, no grace period and no warning. `DisposeDevice` is about one device and is not a
+signal that the process is going. So there is no flush, no final write and no chance to close anything
+politely — anything you want to survive has to be durable at the moment it is true, and anything you hold
+open is closed by the kernel.
+
+Two things follow that are easy to get wrong: a lock file you clean up on exit is a lock file that is never
+cleaned up, and a "graceful shutdown" branch is dead code.
+
+### 7.5 The address, the working directory, and where your logging goes
+
+| | |
+|---|---|
+| Address | `REMAESTRO_DRIVER_URL` and `ASPNETCORE_URLS`, both set to the same **URL** — `http://127.0.0.1:53412`. Not a `host:port`, because the variable it was modelled on is ASP.NET Core's; strip the scheme yourself. The `http://` is load-bearing: the hub speaks **cleartext h2c** and cannot talk to a driver serving TLS |
+| Port | chosen by the hub, which binds it, closes it, and hands you the number. Losing that race is possible; die loudly if you cannot bind, because the hub has a guard for a driver that exited while something else answered on its address |
+| Working directory | the package root — §6.2 |
+| stdout / stderr | **not redirected.** They are the hub's own, so a line you print lands in the hub's console or its container log, interleaved with everything else. There is no per-plugin log file |
+
+### 7.6 Two names, two rules
+
+`plugin.json` carries an **id** and your descriptor carries a **`type_id`**, and they are not the same name:
+
+- the **id** is matched case-insensitively, must be reverse-DNS with at least three labels to pass the
+  registry, and is **refused outright** if it collides with a driver the hub ships;
+- the **`type_id`** is what decides which driver serves a device. Nothing validates it — not its
+  characters, not its emptiness, and **not a collision with a shipped driver's `type_id`**, which is an
+  ordinal dictionary write that the last driver to start wins.
+
+Pick a `type_id` that is obviously yours.
+
+### 7.7 `traits` is a closed vocabulary that is not in this contract
+
+`DriverDescriptor.traits` and `CreateDeviceResponse.traits` decide how a device is grouped, which icon it
+draws and what an activity is generated from. The proto names three of the thirteen and then an ellipsis.
+The list is: `ir.emitter`, `ir.receiver`, `input.source`, `input.switcher`, `bridge`, `media.library`,
+`media.player`, `display`, `audio`, `power`, `lighting`, `proxy`, `cover`.
+
+**An unknown trait is accepted, labelled as itself, and does nothing.** No error and no log line, so the
+only way to find out you guessed wrong is to read the hub's source, which you do not have.

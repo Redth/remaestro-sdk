@@ -137,7 +137,11 @@ func (d *Driver) Describe(ctx context.Context, req *pb.DescribeRequest) (*pb.Dri
 			{Key: "beats", Type: "number"},
 		},
 
-		Traits: []string{"speaker"},
+		// **"audio", and this was "speaker" until it was checked.** The closed set lives in the hub's
+		// `DeviceTraits.cs`, which a plugin author cannot see; the whole public contract says
+		// `(ir.emitter, bridge, display…)` — three of the thirteen, and an ellipsis. An unknown trait is
+		// accepted, labelled as itself, and does nothing anywhere.
+		Traits: []string{"audio"},
 
 		// The highest `Protocol` value this driver was built against. Same integer as `abi` in plugin.json.
 		ProtocolVersion: currentProtocol(),
