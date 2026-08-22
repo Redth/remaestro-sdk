@@ -201,6 +201,31 @@ who could consume it, and NuGet.org remains the public channel whenever it is op
 A non-.NET plugin, end to end, installed the way a user would install it. Both audits left a reproduction
 recipe in an appendix, so this starts from a working base rather than from scratch.
 
+> **Done twice, and the second one is what the phase was actually for.** `#264` cashed it in Python and
+> `#427` did it again in Go — and the second was worth doing because the question had changed. Once a
+> working plugin and a fourteen-line checklist exist, *"can a non-.NET plugin work"* is answered and
+> **"is the checklist complete, asked by somebody who did not write it"** is not.
+>
+> It was not. Ten things cost more than the checklist said, seven of them new; the plugin found them and
+> the plugin is not the deliverable. The sharpest is that a driver which **returns cleanly from
+> `StreamEvents` goes on looking completely healthy** — every unary call answers, the liveness reading is
+> green — while every event and every hold is silently gone and nothing reconnects. Returning is the
+> natural shape in most languages. Next: nothing ever asks a plugin to stop (`SIGKILL`, measured with
+> handlers on four signals that never fired), `GetState` replaces where the two fields beside it in the
+> same message explicitly do not, and the process is launched, asked one question and killed before any
+> device exists.
+>
+> One line of `driver.proto` changed: **`option go_package`, without which `protoc-gen-go` refuses to run
+> at all** — fatal, nothing generated, at step one, from a file whose preamble says it is the contract *in
+> any language*. `sdk/docs/driver-protocol.md` §7 is where the rest of it now lives, written for the
+> generated-from-the-proto reader.
+>
+> And the half a proof usually skips: `linux-arm64` and `linux-x64` were both **run and driven end to
+> end**, in a `FROM scratch` container with a read-only root, rather than on the laptop that built them.
+> No real Pi and no real cloud deploy — stated there rather than implied here.
+>
+> `samples/go/README.md` is the ten-item list in the order they were hit, beside `samples/python`'s seven.
+
 ### Phase 4 — packaging and install
 
 Signed `tar.gz` + `plugin.json`, one archive per architecture (the appliance data partition is **3.0 GiB and
