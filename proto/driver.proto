@@ -1,6 +1,25 @@
 syntax = "proto3";
 
 option csharp_namespace = "Remaestro.Grpc";
+
+// **`protoc-gen-go` refuses to run without this line**, and that makes it the first thing a plugin author
+// outside .NET hits — before they have generated a single message:
+//
+//     protoc-gen-go: unable to determine Go import path for "driver.proto"
+//     Please specify either: a "go_package" option in the .proto source file, or a "M" argument …
+//
+// Every other generator defaults something. Go treats a missing import path as fatal, so a file carrying a
+// `csharp_namespace` and nothing else says, at the first step, that this contract was written for one
+// language. The path below does not have to be a module anybody can `go get` — it is the default import
+// path for the generated package, and an author who wants their stubs somewhere else still overrides it
+// with `--go_opt=M<file>=<path>` exactly as they would have had to anyway. What it buys is that the
+// stock command *works*. `samples/go/package.sh` is the worked example.
+//
+// The `;maestro` suffix is the Go package name and is not decoration: without it protoc-gen-go names the
+// package after the last path element, and a Go package called `proto` shadows the one every generated
+// file already imports.
+option go_package = "github.com/Redth/remaestro-sdk/proto;maestro";
+
 package maestro;
 
 // ---- The compatibility promise ------------------------------------------------------------------------

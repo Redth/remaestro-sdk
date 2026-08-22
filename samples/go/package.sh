@@ -34,17 +34,19 @@ esac
 
 rm -rf "$STAGE" && mkdir -p "$STAGE"
 
-# 1. Stock codegen. No plugins, no options, nothing from this repository — except one thing that is not
-#    optional and is not in any checklist:
+# 1. Stock codegen. No plugins, no options, nothing from this repository.
 #
-#    **`protoc-gen-go` refuses to run against `driver.proto` at all.** The file carries
-#    `option csharp_namespace` and no `option go_package`, and the Go generator treats a missing Go import
-#    path as a fatal error rather than as something to default:
+#    **`protoc -I ../../proto --go_out=. --go-grpc_out=. driver.proto` now works on its own**, and until
+#    `#427` it did not: `protoc-gen-go` treats a missing Go import path as *fatal* where every other
+#    generator defaults something, so a file carrying `option csharp_namespace` and nothing else stopped a
+#    Go author at step one with
 #
 #        protoc-gen-go: unable to determine Go import path for "driver.proto"
 #
-#    The `M<file>=<import path>` flag below is the fix, and a stranger has to know it exists before they
-#    have generated one line. Nothing in the proto, the protocol page or the manifest schema mentions it.
+#    `driver.proto` now declares `option go_package`, so the stock command generates. The `M…` flags below
+#    are **layout**, not a workaround: they put the stubs inside *this* module at
+#    `example.com/metronome/gen/maestro` rather than under the SDK's own import path. Any plugin with a
+#    module path of its own needs the same two flags, whatever the proto says.
 rm -rf "$HERE/gen" && mkdir -p "$HERE/gen"
 protoc -I "$PROTO_DIR" \
     --go_out="$HERE/gen"      --go_opt=module=example.com/metronome/gen \
