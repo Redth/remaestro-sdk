@@ -344,11 +344,48 @@ at `/plugins/installed/{id}`. It shows one plugin at length: where it is install
 launched, the media kinds it declares and what each plays as, the pictures it ships and any it refused, its
 whole tool list, and its pinned publisher with the record of any override.
 
-> **It is not yet the settings screen the design calls for**, and the gap is worth stating plainly because
-> it is larger than the page: **there is no plugin-level settings schema on this wire at all.**
-> `ConfigField` hangs off a device type, a command or a tool — never off the plugin — and there is no rpc
-> to read or write plugin settings and no store behind one. A plugin has a page and nothing to configure on
-> it. That is a phase of its own.
+**And it now has a settings form on it, which is the thing that page was missing.** Declare
+`settings_schema` on your `DriverDescriptor` — a `repeated ConfigField`, the same grammar a device's config
+uses — and the hub draws it on your plugin's page and keeps the answers.
+
+What you need to know to use it, in the order it will matter to you:
+
+- **It is per person, not per hub.** The hub keeps one set of answers for each account that has saved any.
+  Two people configure you differently and neither sees the other's. If you have one answer for the whole
+  house, say so in your `help` text: the hub cannot tell, and it will still keep a copy per person.
+- **You are told by push, on every start, before any device is created.** `ApplyPluginSettings` carries one
+  person's answers and who they are. Answer `UNIMPLEMENTED` — which is what you get for not implementing it
+  — and the hub keeps the values, says on your page that this build of you cannot be told, and carries on.
+  That is a legitimate arrangement rather than a half-built one; declare the `settings` capability when you
+  do want telling.
+- **A key you declared may be absent and a key you did not declare may be present.** Absent means nobody
+  answered it, so read your own default rather than an empty string — a value somebody *cleared* is absent
+  too, deliberately. Present-and-unknown means somebody configured an older build of you, and the hub keeps
+  what it was given rather than discarding an answer on the strength of a schema that may be the stale half.
+- **Refusing does not un-store anything.** The hub saves before it tells you, so that somebody who typed
+  something wrong still has a form they can correct. What `ok = false` buys is that your sentence appears
+  beside the fields they filled in — so write it for them: *"that folder isn't there"*, not *"invalid
+  configuration"*.
+- **Two fields do less here than on a device's form, and it is better to know than to discover.**
+  `options_key` is not fetched — the rpc behind it takes a device id and there is no device — and the
+  hardware selectors (`serial`, `input`, `lirc`, `audio.in`) draw as plain boxes for the same reason.
+  Everything else behaves identically: `options` and `min`/`max` are enforced on save, `show_when` hides a
+  field, `sensitivity` decides whether a value is ever rendered back, and `required` draws an asterisk and
+  is not enforced.
+
+> **This is where the hub tells you who is in the household, and it is the only place on this contract that
+> does.** `PluginSettingsMessage` carries a user id and a display name. Nothing else you are sent names a
+> person — a command, a device creation and a tool call all arrive with no principal — and that is not an
+> oversight waiting to be filled in.
+>
+> Key on the id and render the name; a name is a thing somebody changes on a Tuesday, and anything you
+> stored under one is then orphaned. There is no role here and no login name, and there will not be: whether
+> somebody may do something is the hub's question and it has already been answered before you were called.
+>
+> And the part worth reading twice. **Nothing sandboxes you** — this product runs a plugin as an ordinary
+> process with the hub's own privileges and says so in its own documentation and on its own privacy pages.
+> Nothing stops you logging a household's names or sending them somewhere, and nothing will notice. The
+> people who installed you were told that in as many words, which is exactly why it is worth deserving.
 
 ---
 
