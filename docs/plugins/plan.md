@@ -49,6 +49,21 @@ any-language seam already exists and works.**
   with a 273-line conformance suite. Counting the C++ firmware there are three implementations of that
   protocol.
 
+> **Those four figures are the survey's, taken 2026-08-15, and three of them have since moved — read a
+> number here as evidence that somebody counted, not as the current answer.** Measured 2026-08-27:
+> `driver.proto` is 1,329 lines and **20** rpcs, `Remaestro.Sdk` is 5,288 lines, and the ProxyAgent
+> conformance suite is past 1,200 — and there are two of those now, one in each repository, deliberately
+> different from one another. They are not refreshed in place and will not be: a count in a plan is a claim,
+> and a claim about a moving number has no way to stay true. `wc -l` and `grep -c '  rpc '` are the current
+> answer.
+>
+> **Every movement is in the finding's favour, which is why the finding stands unchanged.** The seam is
+> still one process per driver over gRPC h2c; the SDK still references `Remaestro.Grpc` and nothing else of
+> the hub's; the untangling nobody had to do still did not have to be done. What changed in kind rather than
+> in size is that since 2026-08-15 the proto and the SDK live in `Redth/remaestro-sdk` rather than beside
+> the hub — so those figures became measurements taken across a repository boundary, which is exactly why
+> they went stale with nothing reporting it.
+
 And the claim was tested rather than argued. **Two agents independently built a Python driver from
 `driver.proto` with stock `protoc` and drove it through the hub's real `ResolveDriver`, real
 `ProcessStartInfo` and real `DriverConnection`.** `Describe`, `CreateDevice`, `ExecuteCommand`, `GetState`,
@@ -119,13 +134,24 @@ in Phase 0 is cheap now and expensive-to-impossible later.
    which returns `Supported = true` on a throw with the comment *"an unreachable bridge shouldn't read as
    'this isn't a bridge'"* — **that comment was the bug report for the other five**. See
    [`docs/driver-protocol.md`](../driver-protocol.md) §3.
-3. **Kill the silent default.** `INavigableDevice.SearchAsync` returns an empty listing by default, which is
-   how HDHomeRun's search came to return nothing forever (`#255`). Removing it after the first publish is a
-   breaking change to strangers. Pair with an **SDK startup assertion** that warns when declaration and
-   implementation disagree — the shape the codebase already uses in `WarnAboutTemplatedDefaults`.
-4. **Resolve the proto/SDK naming divergence.** The proto says `SearchNodes`/`Browse`/`GetNode`; the SDK says
-   `SearchAsync`/`BrowseAsync`/`GetNodeAsync`. **Every generated non-.NET SDK will carry the proto's names**,
-   so a second language makes this worse, not better.
+3. ~~**Kill the silent default.** `INavigableDevice.SearchAsync` returns an empty listing by default, which is
+   how HDHomeRun's search came to return nothing forever (`#255`).~~ ~~Removing it after the first publish is a
+   breaking change to strangers.~~ **Done, with item 4, by one change — `9ada1cd` in `Redth/remaestro-sdk`,
+   2026-08-15, alongside the submodule move that made the two trees one.** The default is deleted and the
+   member is `SearchNodesAsync`, so HDHomeRun's spelling stopped being an accidental extra method and became
+   the override. `Navigation.cs`'s own doc comment now carries the rule the audits derived — *a default
+   interface member may state a negative, never a result* — and the direction-of-surprise argument that goes
+   with it: over the raw wire an unimplemented rpc answers `UNIMPLEMENTED`, so the C# convenience had
+   invented a silent failure the protocol does not have.
+   <br>**Still open, and it is the half nobody has built**: the **SDK startup assertion** that warns when
+   declaration and implementation disagree — the shape the codebase already uses in
+   `WarnAboutTemplatedDefaults`. Nothing in `DriverHost` does this today.
+4. ~~**Resolve the proto/SDK naming divergence.** The proto says `SearchNodes`/`Browse`/`GetNode`; the SDK says
+   `SearchAsync`/`BrowseAsync`/`GetNodeAsync`.~~ **Same change, and the rename is why the removal could not
+   wait.** Every member is `<rpc name>` + `Async` now — `Browse`→`BrowseAsync`, `GetNode`→`GetNodeAsync`,
+   `SearchNodes`→`SearchNodesAsync`. The reason stands as written: **every generated non-.NET SDK carries
+   the proto's names** and cannot be talked out of them, so a second language would have made the divergence
+   permanent, while renaming cost three call sites.
 5. **Liveness at the driver boundary (`#152`).** ~~Nothing restarts a crashed driver today.~~ The framing
    here was wrong: nothing *restarts*, and nothing should — the dangerous case is the hang rather than the
    crash, and a hub that kills a driver on a guess costs a room going dark. What was missing was that a
@@ -139,11 +165,17 @@ in Phase 0 is cheap now and expensive-to-impossible later.
    one interceptor on the channel rather than an edit at each of 25 call sites, so the twenty-sixth is
    bounded without anybody remembering. Streaming is deliberately untouched: a deadline on `StreamEvents`
    would kill every healthy driver in the house on a timer.
-6. **A secret-redaction obligation that survives leaving C#.** `DriverHost.cs:255` registers config secrets
-   for redaction automatically, so a C# plugin gets it invisibly and **a Python plugin gets nothing** — skip
-   it and every captured diagnostic ships the device's password. There is no wire-level equivalent. This is
-   the item a plugin author would never think of unaided, and under a trust model with no sandbox it is the
-   sharpest asymmetry in the whole any-language promise.
+6. **A secret-redaction obligation that survives leaving C#.** `DriverHost.CreateDevice` registers config
+   secrets for redaction automatically, so a C# plugin gets it invisibly and **a Python plugin gets nothing**
+   — skip it and every captured diagnostic ships the device's password. There is no wire-level equivalent.
+   This is the item a plugin author would never think of unaided, and under a trust model with no sandbox it
+   is the sharpest asymmetry in the whole any-language promise.
+   <br>*Cited by member rather than by line since 2026-08-27: it was `DriverHost.cs:255` when this was
+   written and that line is a different method now. It has also grown a rule — `RegistersAsSecret` lets a
+   declared `Sensitivity` beat the key-name guess in both directions — which changes nothing about the
+   asymmetry, because the guess is the part no other language has. The obligation is written down for
+   strangers in `sdk/docs/driver-protocol.md` §5, twice, including the "redact the bytes not the words"
+   half.*
 
 ### Phase 1 — make the hub able to find and launch a plugin
 
