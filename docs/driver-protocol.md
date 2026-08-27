@@ -350,9 +350,9 @@ two architectures a hub actually is, rather than on the machine that built it.
       hand and stopped one short of `hex`. Blot the payload **before** you truncate it for rendering — half
       a password is a shorter password, not a redacted one. `samples/python/lamp/diag.py` is the worked
       example.
-- [ ] **Never return from `StreamEvents`.** Serve it until the *hub* ends it. A driver that returns
-      cleanly loses every event, every hold and eventually its own heartbeat, and nothing reconnects and
-      nothing is logged — §7.2.
+- [ ] **Never return from `StreamEvents`.** Serve it until the *hub* ends it. Everything you publish
+      between an end and the hub's reopen is lost — every event, every hold, your own heartbeat — and an
+      older hub does not reopen at all. Be ready to serve the call more than once — §7.2.
 - [ ] **Answer `GetState` with your whole state map, every time.** It replaces rather than merges. The two
       fields beside it in the same message are the opposite rule and say so; this one is not and does not.
 - [ ] **Validate your own config.** Nothing hub-side checks a value against the schema you declared — not
@@ -464,10 +464,11 @@ Measured — two pids, one second apart, on the first boot after an install. So:
   exists. The cache is keyed on your declared version plus a stamp over your whole directory, so bumping
   the version in `plugin.json` invalidates it whatever the bytes did.
 
-### 7.2 `StreamEvents` is opened once and must never return
+### 7.2 `StreamEvents` must never return, and a stream that ends is reopened
 
-The hub calls it immediately after `Describe` and reads it for the life of the process. It does not
-reconnect, and it does not log a stream that ended.
+The hub calls it immediately after `Describe` and reads it for the life of the process. **Serve it until the
+hub's own cancellation, and treat your own exit from that method as a bug.** Everything below is what ending
+it costs and what the hub does about it, and none of it makes ending it acceptable.
 
 **A driver that returns cleanly from `StreamEvents` looks completely healthy.** Sabotaged and measured: end
 the stream after one frame and unary calls still work, `GetState` still answers, commands still succeed,
@@ -477,8 +478,53 @@ running at the time.
 
 This is worth stating because **returning is the natural shape in most languages**: a `for` over a channel
 that closes, a generator that runs out, a callback loop whose condition goes false. In C# it is an
-`IAsyncEnumerable` that completes. Serve until the hub's own cancellation, and treat your own exit from
-that method as a bug.
+`IAsyncEnumerable` that completes.
+
+**The hub notices, says so, and opens the stream again.** A stream that ends for any reason — your clean
+return, an `RpcException`, a fault on the hub's own side of the read — is written to the hub's log as a
+warning naming your driver and the wait, and then reopened as a fresh call on the channel that is already up:
+
+| | |
+|---|---|
+| The wait | doubles from **1 s** and is clamped at **30 s** — 1, 2, 4, 8, 16, 30, 30, … |
+| The count | is ends *in a row*, not a tally. A stream that stays up for **30 s** clears it, and the next end starts again at 1 s |
+| The ceiling | has no attempt limit above it, deliberately. A driver that comes back after an hour is streamed again |
+| It gives up | only when the hub is shutting your driver down, or when your **process has already exited** — there is nothing to reopen against a process that is gone, and that case is logged as itself |
+
+It is also reported to people, in one sentence with two shapes: `event stream ended 4s ago` while it is a
+single end, `event stream ended 6 times, last 4s ago` after that. The hub's own System page shows it for
+every end. A **device** row shows it only once the wait has walked all the way out to the ceiling — six ends
+and thirty-one seconds of a stream that will not stay up — and then marks that device **"Not reporting"** in
+front of whoever owns it. Deliberately not "offline": your unary calls are still being answered, which is
+the whole trap this section is about.
+
+**Three things follow, and they are obligations on you rather than on the hub.**
+
+1. **You may be asked for `StreamEvents` more than once in one process, and every call must be served like
+   the first.** This is the one genuinely new requirement here — before, a second call could not happen. A
+   plugin that refuses a second `StreamEvents`, or that hands its event channel to a single consumer and
+   has nothing left for the caller after it, turns one transient fault into a permanent one, and the hub
+   will go on asking every thirty seconds for as long as the process lives.
+2. **A cancelled stream is that one call ending, not your process being stopped.** The hub cancels the
+   previous call before it opens the next, so you are never asked to serve two at once — and a cancellation
+   arriving on `StreamEvents` says nothing about whether you are about to be shut down. §7.4 is what that
+   looks like, and it looks nothing like this.
+3. **Nothing is restarted.** The hub re-asks and never kills: your process, its devices, its connections
+   and anything it has learned are all exactly as you left them.
+
+**None of that repeals the advice, and this is the part to take away.** *Everything you publish between the
+end and the reopen is gone* — every device event, every hold, and your own heartbeat, which rides this same
+stream. Nothing is buffered hub-side and nothing is replayed, so a plugin that ends its stream once an hour
+still loses whatever happened in that second. A plugin that returns immediately is worse than it sounds:
+the schedule walks it out to the ceiling within half a minute, after which it is streaming for a few
+milliseconds out of every thirty seconds and is marked as not reporting. **The hub recovering is a floor
+under the damage, never permission to end the stream.**
+
+**And a hub older than this one does neither half.** It caught the `RpcException` and returned, so a stream
+that ended ended that hub's interest in your driver for the rest of the process — with nothing logged, and
+`GetState`, commands, diagnostics and the heartbeat all still answering. This behaviour arrived with the
+hub, not with the contract, so a plugin published today may be run by such a hub — which is one more reason
+the paragraph above is the load-bearing one.
 
 ### 7.3 A device's refusal and a driver's failure are different answers
 
