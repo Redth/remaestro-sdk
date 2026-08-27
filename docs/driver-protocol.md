@@ -412,10 +412,15 @@ two files.
 | Arguments | `exec[1..]`, passed as argv. Nothing is parsed and nothing needs quoting |
 | Working directory | **the package root** |
 | Address to serve on | `REMAESTRO_DRIVER_URL`, and `ASPNETCORE_URLS` with the same value |
+| Somewhere to write | `REMAESTRO_DRIVER_STATE_DIR` — a directory of your own, made for you before you start, and the only place you may keep anything. §7.5 |
 
 **The working directory is the one that catches people**, because the hub used to pass its own and a .NET
 driver never noticed — `AppContext.BaseDirectory` does not care. Anything resolving a path relative to itself
 does.
+
+**And it is not where you put a file you mean to keep.** The package root is *version*-scoped —
+`<data>/plugins/<id>/<version>/` — so a database written beside your code is thrown away by your own next
+release. `REMAESTRO_DRIVER_STATE_DIR` is the answer to that and §7.5 is the whole of it.
 
 `REMAESTRO_DRIVER_URL` and `ASPNETCORE_URLS` are two names for one fact rather than a migration: every driver
 in the field reads the second, and nobody writing Go should have to read a variable named after a .NET web
@@ -615,14 +620,74 @@ contract, so a plugin published today may be run by a hub that still uses `SIGKI
 more reason the paragraph above is the load-bearing one. A handler is safe on every hub: on an older one it
 simply never fires, which is where this section started.
 
-### 7.5 The address, the working directory, and where your logging goes
+### 7.5 The address, the working directory, where you may write, and where your logging goes
 
 | | |
 |---|---|
 | Address | `REMAESTRO_DRIVER_URL` and `ASPNETCORE_URLS`, both set to the same **URL** — `http://127.0.0.1:53412`. Not a `host:port`, because the variable it was modelled on is ASP.NET Core's; strip the scheme yourself. The `http://` is load-bearing: the hub speaks **cleartext h2c** and cannot talk to a driver serving TLS |
 | Port | chosen by the hub, which binds it, closes it, and hands you the number. Losing that race is possible; die loudly if you cannot bind, because the hub has a guard for a driver that exited while something else answered on its address |
-| Working directory | the package root — §6.2 |
+| Working directory | the package root — §6.2. **Read-mostly**: it is version-scoped, so anything you write here goes with your next release |
+| State directory | `REMAESTRO_DRIVER_STATE_DIR` — an absolute path to a directory that is yours alone, already made, mode **0700**. Not version-scoped, so it survives your upgrades; deleted when somebody uninstalls you |
 | stdout / stderr | **not redirected.** They are the hub's own, so a line you print lands in the hub's console or its container log, interleaved with everything else. There is no per-plugin log file |
+
+#### `REMAESTRO_DRIVER_STATE_DIR`, in full
+
+**Everything you want to still have next time goes in here, and there is nowhere else.** That is not advice,
+it is the shape of the box you are running on: an appliance hub runs under `ProtectSystem=strict` with one
+writable path, and `/tmp` there is a 256 MB tmpfs *in RAM* which is also where `PrivateTmp=` puts you. Your
+own package directory is writable and is the wrong answer for a different reason — it carries your version
+number, so your next release is a different directory and your data is in the old one.
+
+- **The hub makes it before it starts you.** You never `mkdir`, you never handle the race, and you do not
+  choose the mode. Open your file and go.
+- **It is yours.** One directory per driver, named after your plugin id. No other plugin is given a path
+  inside it. It is `0700` — owner only — because what a driver keeps is often a token it was issued, and on
+  an appliance there are other local users. Note the honest limit: every plugin runs *as the hub's own user*,
+  so this stops other people on the box and not other plugins. Nothing on this hub does — §6 of the plugin
+  plan says so in as many words.
+- **It survives an upgrade and does not survive an uninstall.** The path has no version in it, so installing
+  your 2.0 over your 1.0 leaves the directory exactly as your 1.0 left it — *you* own migrating what is in
+  it, and the hub will never rewrite or clear it. An uninstall deletes it, along with your code and your
+  settings, because a store belonging to a plugin that is not on the box is a leak nobody will ever come
+  back for.
+- **Commit as you go.** Two seconds of `SIGTERM` grace and then a kill (§7.4), a crash, or the hub itself
+  being killed all end you with whatever you had not flushed. A store that is only durable at shutdown is a
+  store that is not durable.
+- **One file, one writer — yours.** Do not put anything in the hub's own database and do not expect the hub
+  to read anything here. This directory is opaque to it.
+
+**It may be unset, and you must survive that.** Two real cases: you are being run by hand out of a build tree
+with no hub at all — which is exactly what this repository's samples tell you to do — and the hub could not
+make the directory, on which it starts you anyway rather than taking every device in the house off the box
+for a full disk. **Unset means you have nowhere durable to write.** Degrade: hold it in memory, refetch next
+time, or say plainly that a feature needs storage. Do not invent a path; every one you could guess is either
+read-only, in RAM, or about to be deleted.
+
+```go
+dir := os.Getenv("REMAESTRO_DRIVER_STATE_DIR")
+if dir == "" {
+    // No hub, or the hub had nowhere to put us. Run without a store rather than guessing at one.
+    log.Println("no state directory; the guide will be re-fetched every time")
+} else {
+    db, err = sql.Open("sqlite", filepath.Join(dir, "guide.db"))
+}
+```
+
+**Two things about it that will not be what you assume, and both are somebody else's rules rather than
+yours.**
+
+- **It is not in the hub's backup.** The portable bundle is JSON, goes to the cloud, and carries what a
+  *person* typed — devices, remotes, activities, accounts, and **your settings**, keyed by your plugin id. It
+  does not carry your code and it does not carry this directory. So a household that restores onto new
+  hardware gets your settings back and an empty state directory. **If you hold something irreplaceable —
+  something a person cannot retype and you cannot re-fetch — a setting is where it belongs, not here.**
+  Everything else, treat this as a cache that happens to persist.
+- **There is no quota yet, and there will be.** The hub cannot refuse your `write(2)`, so nothing is enforcing
+  a ceiling on this directory today. That is a gap being closed, not a licence: the data partition an
+  appliance guarantees is 3.0 GiB, shared with the hub's database, two unpacked app versions, a ~150 MB
+  speech model and every other plugin. A guide store measured at 483 MB is already 16 % of it. **Bound what
+  you keep — by time, by row count, or by bytes — and do it now**, because the alternative to your ceiling is
+  somebody else's.
 
 ### 7.6 Two names, two rules
 
