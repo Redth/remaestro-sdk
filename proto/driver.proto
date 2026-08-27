@@ -120,6 +120,25 @@ service Driver {
   // this answers UNIMPLEMENTED, the same "no" `GetRemote` gets above — and the hub turns it into a
   // sentence saying the plugin declared the tool and cannot run it, which is more use than a stack trace.
   rpc InvokeAssistantTool (AssistantToolCallRequest) returns (AssistantToolResultMessage);
+
+  // Hand this plugin the settings one person has saved for it — the other half of `settings_schema`, and
+  // the only rpc on this contract that names a human being.
+  //
+  // **Pushed, never pulled, and that is forced rather than chosen.** The hub is the gRPC client and a
+  // plugin is the server, so a plugin has no way to ask; the hub therefore tells it. It tells it on every
+  // start, for every person who has saved anything, before any device is created — the same replay
+  // `CreateDevice` gets, for the same reason: a plugin restarted by a crash must come back configured the
+  // way it was, and a plugin that had to be reconfigured by hand after a restart is not a plugin anybody
+  // would install.
+  //
+  // **Not on a device, and not per call.** Settings belong to the plugin the way `assistant_tools` do.
+  // Nothing else on this contract carries an identity and nothing else is going to: a tool call still
+  // arrives with no principal, because the hub's own AI layer has never had one either.
+  //
+  // A driver that declares no `settings_schema` is never called here. One that declares a schema and does
+  // not implement this answers UNIMPLEMENTED, the same "no" `GetRemote` gets above — the hub keeps the
+  // values, says so on the plugin's page, and does not treat it as a fault.
+  rpc ApplyPluginSettings (PluginSettingsMessage) returns (PluginSettingsAck);
 }
 
 // What the hub says about itself when it asks a driver who it is. The other half of negotiation, and the
@@ -194,6 +213,11 @@ message DriverDescriptor {
   //   "navigation"      — devices answer Browse/GetNode/SearchNodes/InvokeItem (supersedes
   //                       supports_navigation); see docs/navigation-spec.md
   //   "diagnostics"     — the driver answers SetDiagnostics/GetDiagnostics with real captured traffic
+  //   "settings"        — the driver answers ApplyPluginSettings for the fields it declared in
+  //                       `settings_schema`. Unlike the others this one is about the *driver*, not its
+  //                       devices — and a driver may declare a schema without declaring this, which the
+  //                       hub reads as "keep my settings and don't bother telling me": the form works, the
+  //                       values are stored, and nothing is pushed.
   //
   // An unknown string is ignored rather than an error — that is rule 4 above, and it is what lets a later
   // hub name a capability this driver has never heard of without breaking it.
@@ -224,6 +248,28 @@ message DriverDescriptor {
   // it — the alternative is that the assistant's catalogue is empty until every plugin has been started,
   // which would make the tools a plugin offers depend on what somebody happened to open first.
   repeated AssistantToolDescriptor assistant_tools = 18;
+
+  // Settings that belong to **this plugin** rather than to any device it makes — an account to sign in to,
+  // a unit preference, a folder to watch. Same `ConfigField` grammar as `config_schema`, and a different
+  // thing entirely: `config_schema` is what the hub has to know to *create a device*, and a plugin with no
+  // devices at all can still have something worth configuring.
+  //
+  // **Per person, and that is the whole shape of it.** The hub stores one dictionary per (person, plugin)
+  // and hands it back on `ApplyPluginSettings`, so two people on one hub configure the same plugin
+  // differently and neither sees the other's answers. If your plugin has one answer for the whole house,
+  // say so in your `help` text — the hub cannot tell, and it will still keep a copy per person.
+  //
+  // **What the hub does with the declaration**, which is exactly what it does with a device's:
+  // `required` is drawn and not enforced, `options` and `min`/`max` are enforced on save, `show_when`
+  // hides a field, `sensitivity` decides whether a value is ever rendered back. Two do less here than
+  // they do on a device and it is worth knowing which: `options_key` is **not** fetched, because the rpc
+  // that answers it takes a device id and there is no device; and the hardware selectors (`serial`,
+  // `input`, `lirc`, `audio.in`) draw as plain boxes, for the same reason — they are a picker over what is
+  // plugged into a hub, resolved against a device that does not exist here.
+  //
+  // On the descriptor rather than asked for, like `media_types` and `assistant_tools`, so somebody can see
+  // and fill in a plugin's settings with its process stopped.
+  repeated ConfigField settings_schema = 19;
 }
 
 // A media type a plugin invents, declared so the hub can route it and draw it.
@@ -802,6 +848,67 @@ message AssistantToolResultMessage {
   // For the hub's log, and never sent to the model. A driver that fills `error` and leaves `text` empty
   // gets a sentence composed by the hub, so nothing is lost by using this for the technical half.
   string error = 3;
+}
+
+// One person's answers to `settings_schema`, and who that person is.
+//
+// ---- The identity, and what it costs -------------------------------------------------------------------
+//
+// **This is the only place a person crosses this boundary, and it is deliberate rather than incidental.**
+// Before this message existed no field on this contract named a human being — no `user`, no `principal`,
+// no `actor`, no `tenant` — and every request was device-scoped. A `(person, plugin)` settings document
+// cannot be handed over without a key, so an id had to cross; the display name crossing beside it is a
+// second decision, taken on its own, and it is the one worth reading.
+//
+// It was taken because the alternative is worse. A plugin given an opaque id and a reason to greet
+// somebody either cannot, or invents its own id-to-name mapping and asks each person to type their own
+// name into it a second time — a second copy of a fact the hub already holds, wrong the first time
+// somebody is renamed.
+//
+// **What it costs, stated because whoever installs a plugin should be able to see what they are agreeing
+// to.** A plugin is an ordinary process with the hub's privileges — this product does not sandbox one and
+// says so in as many words. So a household's names now reach every installed third-party binary, and that
+// binary may log them, keep them, or send them anywhere, and nothing in the product observes it. The hub's
+// privacy pages carry this as its own category rather than leaving a reader to work it out.
+//
+// **Three things this is not**, each cheap now and expensive later:
+//   1. The name is a courtesy, never a key. Key anything you store on `user_id`. Somebody will be renamed.
+//   2. It is the display name and not the login name. The login half of a credential pair does not cross.
+//   3. There is no role, no enabled flag and no last-login here, and there will not be. A plugin that needs
+//      to know whether somebody may do something is asking the wrong process.
+message PluginSettingsMessage {
+  // Stable, opaque, and the only thing here fit to key on. Never blank.
+  string user_id = 1;
+
+  // What this person is called, for a plugin to render. May be blank — an account need not have one — and
+  // may change at any time without `user_id` moving, which is the entire reason the two are separate.
+  string user_display_name = 2;
+
+  // Their answers, keyed as `settings_schema` declared them, flattened to strings the way every other
+  // dictionary on this contract is.
+  //
+  // **A key you declared may be missing, and a key you did not declare may be present.** Missing means
+  // nobody has answered it — read your own default rather than an empty string, because the hub does not
+  // fill one in. Present-and-unknown means somebody configured this plugin, then updated it to a build
+  // that no longer declares that field; the hub keeps what it was given rather than quietly discarding an
+  // answer on the strength of a schema that may itself be the stale half.
+  //
+  // A value a person **cleared** is absent, not blank. The hub replaces this dictionary wholesale on every
+  // save for exactly that reason, so removing a setting really does remove it.
+  map<string, string> values = 3;
+}
+
+message PluginSettingsAck {
+  // False when the plugin will not accept these values — a folder that is not there, an account that will
+  // not sign in. **The hub has already stored them**, and it stores them either way: refusing to store what
+  // somebody typed leaves them with a form they cannot correct and a plugin they cannot reconfigure. What
+  // `ok = false` buys is that `error` is shown to the person who pressed Save, next to the fields they
+  // filled in.
+  bool ok = 1;
+
+  // Why, in words for the person at the form rather than for a log. Empty with `ok = false` gets a
+  // sentence composed by the hub, so there is no need to invent one.
+  string error = 2;
 }
 
 message CreateDeviceRequest {

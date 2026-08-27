@@ -128,6 +128,75 @@ public interface IRemaestroDriver
         => Task.FromResult<AssistantToolAnswer?>(null);
 
     /// <summary>
+    /// Settings that belong to <b>you</b> rather than to any device you make — an account to sign in to, a
+    /// unit preference, a folder to watch.
+    /// <para>
+    /// <b>Not <see cref="ConfigSchema"/>, and the difference is what each one is for.</b> That one is what
+    /// the hub has to know in order to call <see cref="CreateDeviceAsync"/>; this one is what *you* want to
+    /// know, and a plugin that makes no devices at all can still have something worth configuring. Same
+    /// <see cref="ConfigField"/> grammar, drawn on your plugin's own page in the console.
+    /// </para>
+    /// <para>
+    /// <b>Per person.</b> The hub keeps one set of answers for each account that has saved any, and hands
+    /// them to you one at a time on <see cref="ApplyPluginSettingsAsync"/>. Two people on one hub configure
+    /// you differently and neither sees the other's answers. If you have one answer for the whole house,
+    /// say so in your <c>Help</c> text — the hub cannot tell, and it will still keep a copy per person.
+    /// </para>
+    /// <para>
+    /// <b>Two fields do less here than they do on a device, and it is better to know than to discover.</b>
+    /// <see cref="ConfigField.OptionsKey"/> is not fetched — the rpc behind it takes a device id and there
+    /// is no device — and the hardware selectors draw as plain boxes for the same reason. Everything else
+    /// behaves exactly as it does on a device's form: <c>Options</c> and <c>Min</c>/<c>Max</c> are enforced
+    /// on save, <c>ShowWhen</c> hides a field, <c>Sensitivity</c> decides whether a value is ever rendered
+    /// back, and <c>Required</c> draws an asterisk and is not enforced.
+    /// </para>
+    /// <para>
+    /// Declared on the driver rather than asked for, like <see cref="MediaTypes"/> and
+    /// <see cref="AssistantTools"/>, so somebody can fill your settings in with your process stopped.
+    /// </para>
+    /// </summary>
+    IReadOnlyList<ConfigField> SettingsSchema => [];
+
+    /// <summary>
+    /// One person's answers to <see cref="SettingsSchema"/>, handed to you.
+    ///
+    /// <para>
+    /// <b>Return null if you do not take settings.</b> That is the default, and the hub reads it exactly as
+    /// it reads an older driver that has never heard of this call: it keeps the values, says on your page
+    /// that this build of you cannot be told about them, and carries on. Declaring a schema and leaving
+    /// this alone is therefore a legitimate arrangement — the hub stores what people type and does not
+    /// pester you — rather than a half-built one. Declare <c>DriverCapability.Settings</c> when you do want
+    /// to be told.
+    /// </para>
+    /// <para>
+    /// <b>You are called on every start, once per person who has saved anything, before any device is
+    /// created.</b> Same replay <see cref="CreateDeviceAsync"/> gets, for the same reason: your process is
+    /// restarted by crashes and by hub updates, and a plugin that had to be reconfigured by hand
+    /// afterwards is not one anybody would keep. So this is not an edit notification — it is how you learn
+    /// what you are configured as, and it arrives again whenever somebody presses Save.
+    /// </para>
+    /// <para>
+    /// <b>A key you declared may be absent, and a key you did not declare may be present.</b> Absent means
+    /// nobody has answered it: read your own default rather than an empty string, because the hub does not
+    /// fill one in and a value somebody deliberately <i>cleared</i> is absent too. Present-and-unknown means
+    /// somebody configured an older build of you; the hub keeps what it was given rather than discarding an
+    /// answer on the strength of a schema that may itself be the stale half.
+    /// </para>
+    /// <para>
+    /// <b>Throwing, or answering <see cref="PluginSettingsOutcome.Refused"/>, does not un-store
+    /// anything.</b> The hub has already saved the values before it tells you, deliberately: a form that
+    /// refuses to keep what somebody typed leaves them with a plugin they cannot correct. What a refusal
+    /// buys is that your sentence appears next to the fields they filled in, which is the only place it is
+    /// any use.
+    /// </para>
+    /// </summary>
+    /// <param name="user">Who this is for — see <see cref="PluginUser"/>, and key on its <c>Id</c>.</param>
+    /// <param name="values">Their answers, keyed as you declared them.</param>
+    Task<PluginSettingsOutcome?> ApplyPluginSettingsAsync(
+        PluginUser user, IReadOnlyDictionary<string, string> values, CancellationToken ct)
+        => Task.FromResult<PluginSettingsOutcome?>(null);
+
+    /// <summary>
     /// True when this type's devices implement <see cref="IRemoteSurfaceDevice"/> — each one draws the
     /// remote it deserves rather than sharing the type's.
     /// <para>

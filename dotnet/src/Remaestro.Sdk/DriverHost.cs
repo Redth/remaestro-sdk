@@ -83,6 +83,7 @@ public sealed class DriverServiceImpl : Driver.DriverBase
         d.RemoteTemplates.AddRange(_driver.RemoteTemplates.Select(ToProto));
         d.MediaTypes.AddRange(_driver.MediaTypes.Select(ToProto));
         d.AssistantTools.AddRange(_driver.AssistantTools.Select(ToProto));
+        d.SettingsSchema.AddRange(_driver.SettingsSchema.Select(ToProto));
         return Task.FromResult(d);
     }
 
@@ -277,6 +278,46 @@ public sealed class DriverServiceImpl : Driver.DriverBase
             Text = answer.Text ?? "",
             Error = answer.Error ?? "",
         };
+    }
+
+    /// <summary>
+    /// One person's plugin settings, handed to the driver.
+    ///
+    /// <para>
+    /// <b>Null is UNIMPLEMENTED and a throw is a refusal</b> — the same split
+    /// <see cref="InvokeAssistantTool"/> makes, for the same reason. A driver that does not take settings
+    /// at all is a fact about the driver and the hub says so once on a page; a driver that took them and
+    /// disliked them is an ordinary outcome with a sentence attached, and turning that into a dead call
+    /// would lose the sentence.
+    /// </para>
+    /// </summary>
+    public override async Task<PluginSettingsAck> ApplyPluginSettings(
+        PluginSettingsMessage request, ServerCallContext context)
+    {
+        PluginSettingsOutcome? outcome;
+        try
+        {
+            outcome = await _driver.ApplyPluginSettingsAsync(
+                new PluginUser(request.UserId, request.UserDisplayName),
+                new Dictionary<string, string>(request.Values),
+                Token(context));
+        }
+        catch (OperationCanceledException)
+        {
+            // The hub stopped waiting. Answering now would be replying to a question nobody is listening
+            // for, and the hub has its own wording for a call that ran out of time.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return new PluginSettingsAck { Ok = false, Error = $"That didn't work: {ex.Message}" };
+        }
+
+        if (outcome is null)
+            throw new RpcException(new Status(StatusCode.Unimplemented,
+                "This driver declares plugin settings but does not take them."));
+
+        return new PluginSettingsAck { Ok = outcome.Ok, Error = outcome.Text ?? "" };
     }
 
     /// <summary>What sits behind this device, when it fronts a bridge (<see cref="IBridgeDevice"/>).</summary>

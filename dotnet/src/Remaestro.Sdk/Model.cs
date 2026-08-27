@@ -288,6 +288,64 @@ public sealed record AssistantToolAnswer(bool Ok, string Text, string? Error = n
     public static AssistantToolAnswer Failed(string text, string? error = null) => new(false, text, error ?? text);
 }
 
+/// <summary>
+/// Somebody with an account on the hub, as far as a plugin is ever told about one.
+///
+/// <para>
+/// <b>This is the only human being on this contract.</b> Nothing else the hub sends you names a person —
+/// a command, a tool call and a device creation all arrive with no principal at all — and that is not an
+/// oversight waiting to be filled in. Settings are per person, so a settings push has to say which; the
+/// rest of the boundary stays device-scoped.
+/// </para>
+/// <para>
+/// <b>Key on <see cref="Id"/>. Render <see cref="DisplayName"/>. Never the other way round.</b> A name is a
+/// thing somebody changes on a Tuesday, and anything you stored under it is then orphaned with no way to
+/// find it again.
+/// </para>
+/// <para>
+/// <b>There is no role here, no enabled flag and no login name, and that is deliberate.</b> Whether
+/// somebody is allowed to do something is the hub's question and it has already been answered before you
+/// were called. A plugin gating its own behaviour on a role it inferred is gating on a copy of an answer
+/// it cannot keep current.
+/// </para>
+/// <para>
+/// <b>What you do with the name is unobserved, and you should treat that as a responsibility rather than
+/// as a permission.</b> This product does not sandbox a plugin; it runs as an ordinary process with the
+/// hub's privileges, and its own documentation says so. Nothing stops you logging a household's names or
+/// sending them somewhere, and nothing in the product will notice. The people who installed you were told
+/// that in as many words, which is precisely why it is worth deserving.
+/// </para>
+/// </summary>
+/// <param name="Id">Stable and opaque. The thing to key on, and never blank.</param>
+/// <param name="DisplayName">
+/// What to call them on screen. <b>May be blank</b> — an account need not have one — so fall back to
+/// something neutral rather than printing an empty string into a sentence.
+/// </param>
+public sealed record PluginUser(string Id, string DisplayName = "");
+
+/// <summary>
+/// What you make of one person's settings, said back to the person who pressed Save.
+/// <para>
+/// <b>The values are stored either way.</b> A refusal is a sentence beside the form, not a rollback — see
+/// <c>IRemaestroDriver.ApplyPluginSettingsAsync</c> for why. So say what is wrong and what to do about it:
+/// "that folder isn't there", "those credentials were rejected", not "invalid configuration".
+/// </para>
+/// </summary>
+public sealed record PluginSettingsOutcome(bool Ok, string? Text = null)
+{
+    /// <summary>Taken, with nothing to say about it.</summary>
+    public static PluginSettingsOutcome Accepted() => new(true);
+
+    /// <summary>Taken, with something worth saying — "signed in as sam@example.com".</summary>
+    public static PluginSettingsOutcome Accepted(string text) => new(true, text);
+
+    /// <param name="why">
+    /// Shown next to the fields somebody just filled in, so write it for them. Empty gets a sentence
+    /// composed by the hub, which is worse but not silent.
+    /// </param>
+    public static PluginSettingsOutcome Refused(string why) => new(false, why);
+}
+
 /// <summary>An event a device raises onto the hub's bus.</summary>
 public sealed record DeviceEvent(string Type, IReadOnlyDictionary<string, string>? Data = null);
 

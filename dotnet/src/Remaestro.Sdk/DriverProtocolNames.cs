@@ -40,6 +40,9 @@ public static class DriverCapability
 
     /// <inheritdoc cref="Remaestro.Grpc.DriverCapability.Diagnostics"/>
     public const string Diagnostics = Remaestro.Grpc.DriverCapability.Diagnostics;
+
+    /// <inheritdoc cref="Remaestro.Grpc.DriverCapability.Settings"/>
+    public const string Settings = Remaestro.Grpc.DriverCapability.Settings;
 }
 
 /// <summary>

@@ -125,6 +125,7 @@ A repeated string. The vocabulary is exactly the set of optional behaviours the 
 | `options` | `ListOptions` for a config field's `options_key` |
 | `navigation` | `Browse`/`GetNode`/`SearchNodes`/`InvokeItem` — supersedes `supports_navigation` |
 | `diagnostics` | `SetDiagnostics`/`GetDiagnostics`, with real captured traffic |
+| `settings` | `ApplyPluginSettings` — **the driver itself**, not its devices; see §3.2.1 |
 
 **An unknown string is ignored rather than refused.** That is rule 4 above, and it is what lets a later hub
 name a capability this plugin has never heard of without breaking it.
@@ -141,6 +142,21 @@ nothing: the hub will call it, and the navigation path in particular has no exce
 the user sees an error where an undeclared driver would have degraded quietly.
 
 The three booleans keep being sent. They are not deprecated on the wire and they never will be — rule 1.
+
+#### 3.2.1 `settings` is the one row about the driver rather than its devices
+
+Every other string in that table is a promise about what a *device* will answer. `settings` is a promise
+about the plugin: that it implements `ApplyPluginSettings` for the fields it declared in
+`DriverDescriptor.settings_schema`. A plugin that makes no devices at all can still have something worth
+configuring, which is the whole reason plugin settings exist.
+
+**And unlike the rest of the table, declaring the schema and not the capability is a legitimate
+arrangement rather than the mistake the paragraph above warns about.** The hub reads it as *keep my
+settings and don't bother telling me*: the form draws on the plugin's page, the values are stored against
+the person who typed them, the plugin's page says this build cannot be told about them, and nothing is
+pushed. Declare `settings` when you want to be told; a driver that declares it and answers `UNIMPLEMENTED`
+gets exactly the same treatment, so the cost of getting this one wrong is a line on a page rather than an
+error in somebody's face.
 
 #### One optional RPC is deliberately not in that table: `InvokeAssistantTool`
 

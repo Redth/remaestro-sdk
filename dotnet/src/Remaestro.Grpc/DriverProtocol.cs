@@ -100,6 +100,23 @@ public static class DriverCapability
 
     /// <summary>The driver answers <c>SetDiagnostics</c>/<c>GetDiagnostics</c> with real captured traffic.</summary>
     public const string Diagnostics = "diagnostics";
+
+    /// <summary>
+    /// The driver answers <c>ApplyPluginSettings</c> for the fields it declared in
+    /// <c>DriverDescriptor.settings_schema</c>.
+    /// <para>
+    /// <b>The one capability here that is about the driver rather than about its devices</b>, which is the
+    /// point of plugin settings: a plugin with no devices at all can still have something worth
+    /// configuring.
+    /// </para>
+    /// <para>
+    /// <b>Declaring the schema and not this is a legitimate combination</b>, and it is not the mistake the
+    /// navigation note above warns about. The hub reads it as "keep my settings and don't bother telling
+    /// me": the form draws, the values are stored against the person who typed them, and nothing is pushed.
+    /// A plugin that wants to be told declares this and implements the rpc.
+    /// </para>
+    /// </summary>
+    public const string Settings = "settings";
 }
 
 /// <summary>
