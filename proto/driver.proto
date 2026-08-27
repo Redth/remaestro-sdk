@@ -436,6 +436,36 @@ message EpgRequest {
   string device_id = 1;
   int64 from_unix = 2;         // window start, unix seconds
   int64 to_unix = 3;           // window end, unix seconds
+
+  // A page of the **channel list**, in the source's own order. `offset` skips, `limit` caps; **`limit` 0
+  // means all of them**, which is what proto3 gives an unset int and what every hub built before these
+  // fields sends, so an existing conversation is unchanged in either direction.
+  //
+  // **Why the window above is not enough, which is the whole reason these exist.** `from_unix`/`to_unix`
+  // bound the programmes and cannot bound the channels: a channel list is not a thing that happens at a
+  // time. Every guide source here honours the window for programmes and returns its entire line-up on
+  // every call, correctly.
+  //
+  // There are two ways over the 4,194,304 bytes a stock gRPC channel will receive, and the commoner one is
+  // not the one you would guess. Both figures below are encoded and measured rather than estimated:
+  //
+  //   - **Programmes.** ~400 channels with synopses and artwork URLs over a 26-hour window — an ordinary
+  //     grabber feed, and the window the hub's own API asks for by default — is **6,616,574 bytes**. This
+  //     is the one an unremarkable subscription reaches.
+  //   - **Channels alone.** An `EpgChannelMessage` with a logo URL and a per-channel stream URL costs
+  //     **152 bytes**, so it takes about **27,600 channels** to go over with no listings at all. An IPTV
+  //     account's line-up is 5,000 to 40,000, so this is real and it is the rarer of the two — the top of
+  //     that range rather than the middle.
+  //
+  // **`programmes` follows the page.** When `limit` is set, send programmes for the channels in *this*
+  // page and no others — otherwise every page carries the whole guide and paging has bought nothing. With
+  // `limit` unset the field means exactly what it always meant, which is why this widens rather than
+  // narrows.
+  //
+  // Page the channels rather than the programmes because the channel list is the half with no bound on it
+  // at all; the programmes already have one, and it is the window.
+  int32 offset = 4;
+  int32 limit = 5;
 }
 
 message EpgMessage {
@@ -1243,6 +1273,33 @@ message SetDiagnosticsResponse { bool ok = 1; }
 message GetDiagnosticsRequest {
   string device_id = 1;   // empty means every device
   int64 after_seq = 2;    // only records newer than this sequence; 0 for everything still held
+
+  // At most this many records, oldest first. **0 means all of them**, which is both what proto3 gives an
+  // unset int and what every hub built before this field sends — so an existing conversation is unchanged
+  // in either direction, and a driver that ignores this entirely behaves exactly as it does today.
+  //
+  // **Why this field exists, measured.** A capture buffer does not fit in one answer. The .NET SDK holds
+  // 4000 records and caps a payload's hex at 512 bytes; filled through the real capture path and encoded,
+  // that is **4,340,002 bytes** against the **4,194,304** a stock gRPC channel will receive — so the
+  // shipped buffer at its own shipped caps is over the limit with no misbehaving plugin anywhere, and the
+  // figure above is the *floor*, taken with the cheapest record a binary transport can produce.
+  //
+  // What that cost before this field is worse than a lost answer, because `GetDiagnostics` is unary and
+  // its caller keeps a watermark: the hub re-asked the same unreceivable window every 400 ms and never got
+  // past it, so one drain that was too big wedged that driver's trace for the life of the process — and
+  // the failure was logged at Debug, which is to say nowhere a person looks. A transient failure became a
+  // permanent one, silently.
+  //
+  // **Pair it with `after_seq`, which is already the cursor.** Ask for `limit` records after the last
+  // sequence you took, take the highest sequence you got, ask again; a page that comes back shorter than
+  // `limit` is the end. Sequences are monotonic per driver, which is what makes a short page safe to read
+  // as "no more" rather than as "not yet".
+  //
+  // Note which end of the wire chooses the number, because it is the reason this is a request field rather
+  // than a streamed response: **the party that knows the limit is the receiver.** A driver slicing on its
+  // own guess cannot know what its hub will accept, and a hub that asked too big can halve this and ask
+  // again. That fallback is only available to the side that sets it.
+  int32 limit = 3;
 }
 
 message DiagnosticsMessage {

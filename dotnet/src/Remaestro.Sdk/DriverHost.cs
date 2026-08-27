@@ -148,12 +148,35 @@ public sealed class DriverServiceImpl : Driver.DriverBase
             var to = DateTimeOffset.FromUnixTimeSeconds(request.ToUnix);
             var data = await src.GetEpgAsync(from, to, Token(context));
 
+            // The page of the line-up this hub asked for, and then only the programmes belonging to it.
+            //
+            // Applied here rather than in any guide source, for the same reason the diagnostics cap is:
+            // all three sources build a full line-up and hand it over, so one slice on this line bounds
+            // every one of them and none of them changes. `EpgRequest.offset`/`limit` in the proto carries
+            // the measurements — ~400 channels with listings behind them encode to 6,616,574 bytes, and a
+            // line-up goes over on its channels alone at about 27,600 of them.
+            //
+            // **Filtering the programmes to the page is not tidiness, it is the point.** Sending the whole
+            // guide alongside a page of channels would leave the answer exactly as big as it was, and the
+            // programmes are the larger half on a feed with synopses in it.
+            var channels = (IEnumerable<EpgChannel>)data.Channels;
+            if (request.Offset > 0) channels = channels.Skip(request.Offset);
+            if (request.Limit > 0) channels = channels.Take(request.Limit);
+            var page = channels.ToList();
+
+            var programmes = (IEnumerable<EpgProgramme>)data.Programmes;
+            if (request.Offset > 0 || request.Limit > 0)
+            {
+                var ids = page.Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+                programmes = programmes.Where(p => ids.Contains(p.ChannelId));
+            }
+
             var msg = new EpgMessage { Supported = true, Availability = Availability.Answered };
-            msg.Channels.AddRange(data.Channels.Select(c => new EpgChannelMessage
+            msg.Channels.AddRange(page.Select(c => new EpgChannelMessage
             {
                 Id = c.Id, Name = c.Name, Logo = c.Logo ?? "", Number = c.Number ?? "", StreamUrl = c.StreamUrl ?? "",
             }));
-            msg.Programmes.AddRange(data.Programmes.Select(p => new EpgProgrammeMessage
+            msg.Programmes.AddRange(programmes.Select(p => new EpgProgrammeMessage
             {
                 ChannelId = p.ChannelId,
                 StartUnix = p.Start.ToUnixTimeSeconds(),
@@ -543,6 +566,21 @@ public sealed class DriverServiceImpl : Driver.DriverBase
         return Task.FromResult(new SetDiagnosticsResponse { Ok = true });
     }
 
+    /// <summary>
+    /// The captured traffic newer than the caller's watermark, at most <c>limit</c> records of it.
+    /// <para>
+    /// <b>The cap is honoured here rather than in any driver, and that is the whole leverage.</b> Every
+    /// driver's capture goes into the one <see cref="Diag"/> buffer, so a single <c>Take</c> on this line
+    /// bounds the answer for all of them and no driver author writes anything. See
+    /// <c>GetDiagnosticsRequest.limit</c> in the proto for what it costs not to: a full buffer encodes to
+    /// 4,340,002 bytes against the 4,194,304 a stock channel receives, so the shipped caps are already over
+    /// the limit — and because this rpc is unary, an answer that cannot be received is the whole answer
+    /// rather than one frame of it.
+    /// </para>
+    /// <para>
+    /// A hub older than the field sends 0 and gets everything, exactly as before.
+    /// </para>
+    /// </summary>
     public override Task<DiagnosticsMessage> GetDiagnostics(GetDiagnosticsRequest request, ServerCallContext context)
     {
         var msg = new DiagnosticsMessage
@@ -550,7 +588,11 @@ public sealed class DriverServiceImpl : Driver.DriverBase
             Enabled = Diag.Everything
                 || (request.DeviceId.Length == 0 ? _devices.Keys.Any(Diag.Enabled) : Diag.Enabled(request.DeviceId)),
         };
-        foreach (var r in Diag.Since(request.DeviceId, request.AfterSeq))
+
+        IEnumerable<Diag.Entry> held = Diag.Since(request.DeviceId, request.AfterSeq);
+        if (request.Limit > 0) held = held.Take(request.Limit);
+
+        foreach (var r in held)
             msg.Records.Add(new DiagnosticRecord
             {
                 Seq = r.Seq,
