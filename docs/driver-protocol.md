@@ -362,8 +362,9 @@ two architectures a hub actually is, rather than on the machine that built it.
       failed — §7.3.
 - [ ] Expect to be launched, asked `Describe`, and killed, before any device exists — §7.1. Keep
       `Describe` cheap and independent of anything `CreateDevice` does.
-- [ ] Expect **no shutdown at all**: no signal, no rpc, no warning — §7.4. Anything you need to survive
-      has to be durable at the moment it is true.
+- [ ] Expect **`SIGTERM`, two seconds, then `SIGKILL`** — and no shutdown rpc on any hub, plus an older
+      hub that sends no signal at all. Anything you need to survive still has to be durable at the moment
+      it is true; the two seconds are a chance to be tidy — §7.4.
 - [ ] Ship a `plugin.json` that validates against
       [`plugin-manifest.schema.json`](plugin-manifest.schema.json) — §6.
 
