@@ -308,7 +308,8 @@ driver has stopped answering.
 **It reports, and it restarts nothing.** A driver holds device connections, learned credentials and
 in-flight commands, and nothing outside it can see that it has stopped — so the System page carries a
 sentence (`no heartbeat for 2 min`, `ExecuteCommand unanswered for 10 min`, or a hold's own reason) and
-that is the whole of it. Nothing loops and nothing kills.
+that is the whole of it. Nothing is restarted and nothing is killed for being quiet — the one thing
+the hub re-asks for is the event stream, §7.2.
 
 The three fields above are what a watchdog that *acts* would need first. They are not a commitment that one
 is coming.
