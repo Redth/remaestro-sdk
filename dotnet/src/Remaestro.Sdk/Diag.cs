@@ -30,6 +30,38 @@ public static class Diag
     /// </summary>
     const int MaxHexBytes = 512;
 
+    /// <summary>
+    /// How much of a record's own text is kept, per field — `#473`.
+    ///
+    /// <para>
+    /// <b>Paging bounds how many records an answer carries and cannot bound one of them.</b>
+    /// <c>GetDiagnosticsRequest.limit</c> exists because a full buffer does not fit in a gRPC message, and
+    /// the hub's drain halves its page until what comes back is receivable. A single record larger than the
+    /// channel's limit defeats that completely: there is no page size that fits, so the drain gives up on
+    /// the window and those records are lost. <see cref="MaxHexBytes"/> already bounded the one field that
+    /// was obviously capable of it; <c>text</c>, <c>detail</c> and <c>endpoint</c> are ordinary strings a
+    /// driver hands us, and nothing bounded them at all. <c>DiagnosticsHandler</c> caps an HTTP body at 600
+    /// characters before it gets here, which is why this has never fired in this repository — but that is
+    /// one call site's manners rather than the buffer's rule, and a plugin's transport has neither.
+    /// </para>
+    /// <para>
+    /// <b>Derived rather than picked.</b> The hub asks for 500 records a page and a stock channel receives
+    /// 4,194,304 bytes, so a record's whole budget is about 8,388. The hex costs at most 1,024 of that,
+    /// which leaves roughly 2,400 for each of the three text fields; 1,200 is half of that, so a full page
+    /// of the worst records this buffer can now hold is about 2.4 MB — receivable without the drain having
+    /// to search for a size. It is also twice <c>DiagnosticsHandler</c>'s 600, so no call site that ships
+    /// today has its output changed by this.
+    /// </para>
+    /// <para>
+    /// <b>The cut is taken after redaction, and that order is load-bearing in both directions.</b> A secret
+    /// straddling the cut would otherwise survive as a fragment — the same argument <see cref="Blot"/>
+    /// makes about the hex — and <see cref="Redact"/> can also make a string <i>longer</i> than it found it
+    /// (a four-character secret becomes a ten-character «redacted»), so capping first would not bound what
+    /// is finally stored.
+    /// </para>
+    /// </summary>
+    const int MaxText = 1200;
+
     static readonly ConcurrentQueue<Entry> _records = new();
     static readonly HashSet<string> _on = new(StringComparer.Ordinal);
 
@@ -89,6 +121,10 @@ public static class Diag
     /// field of every record verbatim into the <c>trace.json</c> inside a support bundle somebody then
     /// emails. The guard that existed enumerated the record's string fields and stopped one short.
     /// </para>
+    /// <para>
+    /// Every field is capped at <see cref="MaxText"/> as well, and says so when it cuts — see there for why
+    /// paging cannot do this job and why the cap goes after the redaction rather than before it.
+    /// </para>
     /// </summary>
     public static void Emit(string deviceId, string transport, string direction, string text, string detail = "",
         string endpoint = "", string hex = "")
@@ -96,8 +132,28 @@ public static class Diag
         if (!Enabled(deviceId)) return;
         _records.Enqueue(new Entry(
             Interlocked.Increment(ref _seq), DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-            deviceId, transport, direction, Redact(text), Redact(detail), Redact(endpoint), RedactHex(hex)));
+            deviceId, transport, direction,
+            Cap(Redact(text)), Cap(Redact(detail)), Cap(Redact(endpoint)), Cap(RedactHex(hex))));
         while (_records.Count > Max) _records.TryDequeue(out _);
+    }
+
+    /// <summary>
+    /// At most <see cref="MaxText"/> characters, <b>saying how many it dropped</b> — the same shape
+    /// <see cref="Bytes"/> uses on an over-long payload, and for a stronger reason.
+    /// <para>
+    /// A buffer that truncates silently is a lie in the one place a reader is trying to find out what
+    /// actually happened: a JSON body cut mid-object and a device that really did send half an object look
+    /// identical, and only one of those is a bug to chase. The count is what tells them apart.
+    /// </para>
+    /// </summary>
+    static string Cap(string text)
+    {
+        if (text.Length <= MaxText) return text;
+
+        // Backed off a character if the cut would land between a surrogate pair, so the last character of a
+        // trace is never a lone half of one — it would reach the hub as U+FFFD and read as corruption.
+        var cut = char.IsHighSurrogate(text[MaxText - 1]) ? MaxText - 1 : MaxText;
+        return text[..cut] + $"… (+{text.Length - cut} chars)";
     }
 
     public static void Tx(string deviceId, string transport, string text, string endpoint = "") =>
