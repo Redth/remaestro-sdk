@@ -1007,7 +1007,40 @@ message DeviceStateMessage {
 message DeviceEventMessage {
   string device_id = 1;
   string type = 2;                            // e.g. "playback.started", "request.sent"
+
+  // What happened, as scalars — a volume, an input name, an error string. **Not a place for bytes**, and
+  // that is a bound rather than a preference:
+  //
+  //   - **A whole frame must fit in 4,194,304 bytes**, which is what a stock gRPC channel will receive.
+  //     This file names that figure twice already — `EpgRequest.limit` and `GetDiagnosticsRequest.limit` —
+  //     and both times about a *unary* answer that could be asked for again in pages. **An event cannot
+  //     be.** There is no cursor on a stream and no request field per frame, so an oversized event is not
+  //     a page to re-ask for; it is a frame that is gone.
+  //   - **What it costs, measured.** The hub's channel refuses the frame, which ends the whole call: the
+  //     oversized frame is dropped *and so is anything you wrote after it on that call*, neither is
+  //     resent, and the hub logs a warning naming your driver and reopens the stream a second later. One
+  //     such frame therefore costs one frame, and §7.2's schedule is what bounds the rest.
+  //   - **But send one at the top of every stream and you deliver nothing, ever.** The reopen hits the
+  //     same frame and ends the same way, for as long as your process lives — measured at 68 opens in two
+  //     seconds. "Publish the current state when a consumer connects" is an ordinary shape and it is the
+  //     one that turns a lost frame into a driver that never reports. §7.2 is the rest of that argument.
+  //
+  // **So put a reference here and not the payload**: a URL the hub can fetch, an id it can ask about, a
+  // path into `Browse`. A snapshot, a poster, a listing and a log file are all things an event can *point
+  // at*; none of them is a thing an event should carry. For scale, and measured on this encoding: a 2 MiB
+  // 4K image base64s to 2,796,239 bytes and still fits, a 10,000-item listing at 400 bytes each is
+  // 4,000,037 and still fits — so what goes over is genuinely large, and is genuinely a payload.
+  //
+  // **There is deliberately no chunking envelope on this message**, and the reason is worth keeping so it
+  // is not proposed a third time. Splitting a frame would put the slicing decision on the *sender*, which
+  // is the arrangement `GetDiagnosticsRequest.limit` argues against below — the party that knows the limit
+  // is the receiver. And it would let these payloads through to a hub that buffers the last 400 events
+  // whole and fans each one out to every subscriber and every connected browser: measured, a full buffer
+  // of 4 MiB events is 3.13 GiB against the 7.87 GiB the shipped appliance has in total. The limit above
+  // is currently the only thing bounding that, so raising it is a change to the hub's memory before it is
+  // a change to the wire.
   map<string, string> data = 3;
+
   int64 timestamp_unix_ms = 4;
 
   // Set only on a heartbeat frame — `type` == "driver.heartbeat", `device_id` empty, `data` empty. The

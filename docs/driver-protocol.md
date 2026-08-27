@@ -354,6 +354,9 @@ two architectures a hub actually is, rather than on the machine that built it.
 - [ ] **Never return from `StreamEvents`.** Serve it until the *hub* ends it. Everything you publish
       between an end and the hub's reopen is lost — every event, every hold, your own heartbeat — and an
       older hub does not reopen at all. Be ready to serve the call more than once — §7.2.
+- [ ] **Put a reference in an event, never a payload.** A frame over 4,194,304 bytes is refused and gone —
+      no cursor, no retry, nothing buffered. Send one at the top of every stream and the driver never
+      reports anything at all. §7.2a.
 - [ ] **Answer `GetState` with your whole state map, every time.** It replaces rather than merges. The two
       fields beside it in the same message are the opposite rule and say so; this one is not and does not.
 - [ ] **Validate your own config.** Nothing hub-side checks a value against the schema you declared — not
@@ -527,6 +530,45 @@ that ended ended that hub's interest in your driver for the rest of the process 
 `GetState`, commands, diagnostics and the heartbeat all still answering. This behaviour arrived with the
 hub, not with the contract, so a plugin published today may be run by such a hub — which is one more reason
 the paragraph above is the load-bearing one.
+
+### 7.2a An event carries scalars, and a frame that is too large is gone
+
+**A frame must fit in 4,194,304 bytes** — what a stock gRPC channel will receive, and the same figure
+`GetEpg` and `GetDiagnostics` are paged against. Those two are unary and have a cursor, so a payload that
+is too big can be asked for again in pieces. **An event has neither.** There is no request field per frame
+and nothing hub-side buffers what it could not read, so an oversized event is not a page to re-ask for; it
+is a frame that is gone.
+
+What one costs, measured through a real hub:
+
+| | |
+|---|---|
+| The oversized frame | dropped, never resent |
+| Anything you wrote after it **on that call** | dropped with it — the refusal aborts the whole call, not one message |
+| Everything before it | delivered normally |
+| The hub | logs a warning naming your driver and the limit, and reopens on §7.2's schedule |
+| The next stream | delivers normally, including anything you queued while it was down |
+
+So **one** oversized frame costs one frame. **But send one at the top of every stream and you deliver
+nothing at all, for as long as your process lives** — the reopen hits the same frame and ends the same
+way, measured at 68 opens in two seconds. "Publish current state when a consumer connects" is an ordinary
+shape, and it is the one that turns a lost frame into a driver that never reports. This is the sharpest
+edge on this page: §7.2's reopen is a floor under the damage from a frame you send *once*, and no floor at
+all under one you send *always*.
+
+**Put a reference in `data`, not the payload.** A snapshot, a poster, a listing, a log file — an event can
+point at any of them with a URL, an id, or a path into `Browse`. None of them is a thing an event should
+carry. For scale, so this reads as a real bound rather than a caution: a 2 MiB 4K image base64s to
+2,796,239 bytes and **fits**; a 10,000-item listing at 400 bytes each is 4,000,037 and **fits**. What goes
+over is genuinely a payload.
+
+**There is no chunking envelope and there is not going to be one**, so that you can build against this
+rather than wait for it. Two reasons, both in `driver.proto` beside `DeviceEventMessage.data`: splitting a
+frame would put the slicing decision on the sender, which is the arrangement `GetDiagnosticsRequest.limit`
+exists to avoid — the party that knows the limit is the receiver. And the hub buffers the last 400 events
+whole and hands each one to every subscriber and every connected browser, so letting these through is a
+change to the hub's memory before it is a change to the wire: a full buffer of 4 MiB events measures
+**3.13 GiB**, against the 7.87 GiB the shipped appliance has in total.
 
 ### 7.3 A device's refusal and a driver's failure are different answers
 
