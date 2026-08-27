@@ -96,10 +96,12 @@ the contract.
 `http://127.0.0.1:53412`; `net.Listen` wants the second half of that. The `http://` says **cleartext h2c**,
 so a plugin that serves TLS because that is its framework's default cannot be talked to at all.
 
-**3. Nothing ever asks you to stop.** A hub ends a driver with `Process.Kill(entireProcessTree: true)` —
-SIGKILL. No rpc, no signal, no grace period. A lock file cleaned up on exit is never cleaned up and a
-"graceful shutdown" branch is dead code. Anything you want to survive has to be durable at the moment it is
-true.
+**3. You are asked to stop, and then killed.** A hub drops your channel, sends `SIGTERM`, waits **two
+seconds**, and only then calls `Process.Kill(entireProcessTree: true)`. There is still no shutdown rpc and
+no message on the wire that means it. This changed after the samples were written — it used to be SIGKILL
+alone, so a lock file cleaned up on exit was never cleaned up and a "graceful shutdown" branch was dead
+code — and a hub older than that still behaves the old way. **Anything you want to survive has to be
+durable at the moment it is true**, however tidy your handler is.
 
 **4. Exactly one rpc is required, and it is `Describe`.** Everything else, including `StreamEvents`, is
 called on demand. `Describe` must answer cold, with nothing set up and nothing connected, within about ten

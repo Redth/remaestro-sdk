@@ -100,10 +100,18 @@ Then it launches you *again* when something actually wants a device. Measured �
 the first boot after install. So `Describe` must be cheap and must not depend on anything you did in
 `CreateDevice`, and any expensive startup you do is paid at least twice.
 
-**5. You never get asked to stop.** Measured: a handler on `SIGTERM`, `SIGINT`, `SIGHUP` and `SIGQUIT`
-across a full install-launch-drive-stop cycle **fired for neither process**. The hub ends a driver with
-`Process.Kill(entireProcessTree: true)` — `SIGKILL` — so there is no graceful shutdown, no flush, and no
-last write. Anything you want to survive has to be durable at the moment it is true.
+**5. You are asked to stop, and then killed.** This one has changed, and the measurement that found it is
+worth keeping because it is why: a handler on `SIGTERM`, `SIGINT`, `SIGHUP` and `SIGQUIT` across a full
+install-launch-drive-stop cycle **fired for neither process** — the hub ended a driver with
+`Process.Kill(entireProcessTree: true)`, `SIGKILL`, and nothing else. It now drops your channel, sends
+`SIGTERM`, waits **two seconds**, and kills the tree only if you are still there. Measured with this plugin
+sabotaged both ways: honouring the signal and releasing a lock file, gone in 10 ms with the file cleaned;
+ignoring it, killed at 2021 ms with a warning in the hub's log.
+
+Nothing in this sample handles it, and that is still deliberate — Go's default disposition for `SIGTERM`
+ends the process, so a plugin that has never thought about shutdown is already correct. **Anything you want
+to survive still has to be durable at the moment it is true**: a crash, an older hub, and your own refusal
+to exit all end you with no warning. See `../../docs/driver-protocol.md` §7.4.
 
 **6. `StreamEvents` must never return, and returning is silent.** Sabotaged and measured: end the stream
 after the first frame and the plugin goes on looking **completely healthy** — `GetState` answers, commands

@@ -53,9 +53,13 @@ func main() {
 
 	log.Printf("example-metronome listening on %s (from %s)", addr, raw)
 
-	// Nothing below is a graceful-shutdown path, and that is not an oversight — see README §"The hub does
-	// not ask you to stop". The hub ends a driver with SIGKILL. Anything this process wants to survive has
-	// to be durable at the moment it is true, not at the moment the process ends.
+	// Nothing below is a graceful-shutdown path, and that is not an oversight — see README §5. The hub
+	// does ask now: it drops the channel, sends SIGTERM, waits two seconds and kills the tree only if this
+	// process is still here. Go's default disposition for SIGTERM ends the process, so a plugin that
+	// installs no handler is already doing the right thing, and adding one here would be a shutdown story
+	// this plugin has nothing to put in it. Anything this process wants to survive still has to be durable
+	// at the moment it is true, not at the moment the process ends: a crash, an older hub, and a refusal
+	// to exit all end it with no warning at all.
 	if err := srv.Serve(lis); err != nil {
 		log.Fatalf("serve: %v", err)
 	}

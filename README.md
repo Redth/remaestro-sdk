@@ -49,7 +49,9 @@ A plugin is **a process that serves gRPC**. The hub starts it, hands it a loopba
 1. **Listen for gRPC h2c** (cleartext HTTP/2 — no TLS, no auth; it never leaves loopback) on the address in
    `ASPNETCORE_URLS`, and serve the `maestro.Driver` service from `driver.proto`.
 2. **Answer `Describe` promptly.** The hub retries for about ten seconds, then gives up on you.
-3. **Exit on `SIGTERM`.** The hub owns your process and reads your liveness from it.
+3. **Exit on `SIGTERM`.** The hub drops your channel, sends it, waits **two seconds**, and then kills your
+   whole process tree. Two seconds is a chance to be tidy and not the moment your state becomes durable —
+   see `docs/driver-protocol.md` §7.4, which says what still ends you without warning.
 4. **Do not fork or daemonise.**
 
 That is all of it. A ninety-line Python script has been run through the hub's real launch path doing exactly

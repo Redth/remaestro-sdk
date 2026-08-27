@@ -72,12 +72,14 @@ func main() {
 
 	log.Printf("hello-world listening on %s (from %s), serving device type %q", addr, raw, typeID)
 
-	// There is no graceful-shutdown path below, and that is not an oversight. The hub ends a driver with
-	// `Process.Kill(entireProcessTree: true)` — SIGKILL — with no rpc, no signal and no grace period, so
-	// a handler here would be dead code that implies a contract nobody offers. Measured in `#427`: a
-	// build carrying SIGTERM, SIGINT, SIGHUP and SIGQUIT handlers, through a full install → introspect →
-	// launch → drive → stop cycle, fired **not one of them**. Anything a plugin wants to survive has to
-	// be durable at the moment it is true, not at the moment the process ends.
+	// There is no graceful-shutdown path below, and that is not an oversight. A hub drops the channel,
+	// sends SIGTERM, waits two seconds and then kills the process tree — and Go's default disposition for
+	// SIGTERM already ends this process, so a handler here would add a shutdown story a rubber duck has
+	// nothing to put in. It used to be SIGKILL and nothing else: measured, a build carrying SIGTERM,
+	// SIGINT, SIGHUP and SIGQUIT handlers through a full install → introspect → launch → drive → stop
+	// cycle fired **not one of them**, which is why the sample says so at all. A hub older than the change
+	// still behaves that way. Anything a plugin wants to survive has to be durable at the moment it is
+	// true, not at the moment the process ends.
 	if err := srv.Serve(lis); err != nil {
 		log.Fatalf("serve: %v", err)
 	}

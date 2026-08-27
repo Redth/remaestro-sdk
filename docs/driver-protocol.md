@@ -492,19 +492,38 @@ generated server surfaces on the request context, and they are: `Describe` **10 
 (command, state, listing, browse, create) **60 s**, `pair_begin`/`pair_finish` **150 s**, `GetEpg`
 **5 min**. `StreamEvents` has none, deliberately.
 
-### 7.4 Nothing asks you to stop
+### 7.4 You are asked to stop, and then killed — `SIGTERM`, two seconds, `SIGKILL`
 
-The hub ends a driver with `Process.Kill(entireProcessTree: true)` — `SIGKILL` on Unix. Measured with
-handlers on `SIGTERM`, `SIGINT`, `SIGHUP` and `SIGQUIT` across a full install-launch-drive-stop cycle:
-**not one of them fired, for either process.**
+**There is still no shutdown rpc**, and there is no message on the wire that means "I am going away".
+`DisposeDevice` is about one device and is not a signal that the process is ending. What you get is the
+signal your operating system already has:
 
-There is no shutdown rpc, no grace period and no warning. `DisposeDevice` is about one device and is not a
-signal that the process is going. So there is no flush, no final write and no chance to close anything
-politely — anything you want to survive has to be durable at the moment it is true, and anything you hold
-open is closed by the kernel.
+1. the hub **drops the gRPC channel**, which ends `StreamEvents` and every call in flight;
+2. it sends **`SIGTERM`** to the process it started — the one, not the tree;
+3. it waits **two seconds**;
+4. if you are still there it calls `Process.Kill(entireProcessTree: true)` — **`SIGKILL`**, and this one
+   does take anything you forked.
 
-Two things follow that are easy to get wrong: a lock file you clean up on exit is a lock file that is never
-cleaned up, and a "graceful shutdown" branch is dead code.
+So a shutdown handler runs, a flush happens, and a lock file you remove on the way out is removed.
+Measured through a real hub with a Go plugin sabotaged both ways: one that handles `SIGTERM` and deletes a
+lock file it holds is gone in **10 ms** with the file cleaned; the same build killed outright leaves it
+behind. One that installs a handler and deliberately ignores the signal spends the whole grace and is
+killed at **2021 ms**, and the hub writes a warning naming it.
+
+**Two seconds is the number and it is not generous.** It was chosen against a measurement of every driver
+the hub ships — 43 of them, 387 timings, ambient and under load — whose whole distribution is p50 24 ms and
+max 472 ms. If your shutdown work does not fit in two seconds it is work that should not be at shutdown.
+
+**None of that repeals the old advice, and this is the part to take away.** *Anything you want to survive
+still has to be durable at the moment it is true.* Four things still end your process with no warning at
+all: a crash, the hub itself being killed, a `SIGKILL` from the container runtime, and — the one you
+control — **your own refusal to exit**, which costs every stop of you the full grace and then kills you
+anyway. Treat the signal as a chance to be tidy, never as the moment your state becomes durable.
+
+**And a hub older than this one sends nothing.** This behaviour arrived with the hub, not with the
+contract, so a plugin published today may be run by a hub that still uses `SIGKILL` alone — which is one
+more reason the paragraph above is the load-bearing one. A handler is safe on every hub: on an older one it
+simply never fires, which is where this section started.
 
 ### 7.5 The address, the working directory, and where your logging goes
 
