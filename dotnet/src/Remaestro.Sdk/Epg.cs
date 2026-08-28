@@ -80,16 +80,101 @@ public sealed record EpgData(IReadOnlyList<EpgChannel> Channels, IReadOnlyList<E
 /// <b>This one method is also what your driver's search reaches, and that is worth knowing before somebody
 /// asks why.</b> <see cref="DriverHost"/> answers <c>SearchEpg</c> for you — every .NET guide source gained
 /// a searchable guide the day that rpc landed, with no change to any of them — by filtering exactly what
-/// this call returns. The contract says a search covers the whole guide the plugin holds; the whole guide
-/// this shim holds is the window it was just asked for, because there is no way to ask you for more. So a
-/// .NET source is conformant and it is also the narrowest conformant thing there is: a search cannot reach
-/// a programme outside the window the guide is open on. Widening it means <see cref="IEpgSource"/> growing
-/// a way to say how much guide you have, which is a change to this interface and has not been made.
+/// this call returns. The contract says a search covers the whole guide the plugin holds, and what this
+/// shim can reach is whatever window it asks you for. Implement <see cref="IEpgHorizon"/> and it asks for
+/// more; do not, and it asks for the window the hub asked about, which is conformant and is the narrowest
+/// conformant thing there is. Either way the answer says which it was, so nobody has to guess.
 /// </para>
 /// </summary>
 public interface IEpgSource
 {
     Task<EpgData> GetEpgAsync(DateTimeOffset from, DateTimeOffset to, CancellationToken ct);
+}
+
+/// <summary>
+/// The stretch of schedule a source already holds, so a search can be asked past the window the guide is
+/// open on. Both ends inclusive-ish in the only sense that matters here: it is the span handed to
+/// <see cref="IEpgSource.GetEpgAsync"/>, and that method's own overlap rule decides what falls inside it.
+/// </summary>
+public readonly record struct EpgHorizon(DateTimeOffset From, DateTimeOffset To)
+{
+    /// <summary>
+    /// The horizon of a set of programmes: earliest start to latest stop, or null for nothing at all.
+    ///
+    /// <para>
+    /// <b>Derive rather than declare, and this method is here so that all three shipped sources derive it
+    /// the same way.</b> A horizon written as a constant — "an XMLTV file carries a fortnight" — is a
+    /// promise about somebody else's document, and the day a provider ships three days instead the source
+    /// reports a reach it does not have with nothing to catch it. Measured off what is actually held it
+    /// cannot be optimistic: an empty document has no horizon, a thin one has a thin horizon, and the
+    /// number moves on its own when the upstream changes.
+    /// </para>
+    /// </summary>
+    public static EpgHorizon? Spanning(IEnumerable<EpgProgramme> programmes)
+        => Spanning(programmes.Select(p => (p.Start, p.Stop)));
+
+    /// <summary>
+    /// The same rule over start/stop pairs, for a source holding a parse of its own rather than
+    /// <see cref="EpgProgramme"/>s — two of the three shipped ones hold an XMLTV document, and projecting a
+    /// hundred thousand programmes into records to find two numbers would be the expensive way to ask a
+    /// cheap question.
+    /// </summary>
+    public static EpgHorizon? Spanning(IEnumerable<(DateTimeOffset Start, DateTimeOffset Stop)> spans)
+    {
+        DateTimeOffset from = default, to = default;
+        var any = false;
+        foreach (var (start, stop) in spans)
+        {
+            if (!any) { from = start; to = stop; any = true; continue; }
+            if (start < from) from = start;
+            if (stop > to) to = stop;
+        }
+        return any ? new EpgHorizon(from, to) : null;
+    }
+}
+
+/// <summary>
+/// A guide source that holds more schedule than any one window, and can say how much — the thing
+/// <see cref="IEpgSource"/> on its own has no way to be asked.
+///
+/// <para>
+/// <b>What this is not.</b> It is not "this source can be searched": every .NET guide source can be
+/// searched, has been able to since <c>SearchEpg</c> landed, and does not implement anything to get it.
+/// It is not a second search either — the predicate stays in <see cref="EpgSearch"/>, in one place, because
+/// a promise about matching that every plugin in every language has to keep identically is the last thing
+/// worth having three copies of inside one language. All this says is <i>how far back and how far ahead the
+/// guide you would hand over runs</i>, and <see cref="DriverHost"/> does the rest by asking
+/// <see cref="IEpgSource.GetEpgAsync"/> for that span instead of for the open window.
+/// </para>
+///
+/// <para>
+/// <b>It can only widen, which is what makes it safe to get wrong.</b> The host searches the union of the
+/// hub's window and your horizon, so a horizon narrower than the window changes nothing and a horizon of
+/// null is exactly today's behaviour. A driver that does not implement this keeps working precisely as it
+/// does now — the naive source is <i>narrow</i>, never wrong, and the answer says on the wire how narrow it was.
+/// </para>
+///
+/// <para>
+/// <b>Answer from what you are already holding, and do not go and fetch.</b> This is called on the search
+/// path, in front of a <see cref="IEpgSource.GetEpgAsync"/> that is about to run anyway; a horizon that
+/// went to the network would double a keystroke's cost to learn something the fetch is about to settle. A
+/// source that holds nothing yet returns null and searches the window, which is the honest answer for the
+/// first search after a cold start — and the next one, once the poll has landed, reaches further and says
+/// so. <see cref="EpgHorizon.Spanning(IEnumerable{EpgProgramme})"/> is the one-line implementation for a
+/// source that holds parsed programmes, and all three shipped sources use one of its two overloads.
+/// </para>
+///
+/// <para>
+/// <b>What it costs is a scan of everything you hold, per search.</b> The host filters the whole span in
+/// memory, so a fortnight is a fortnight's worth of records projected on every keystroke — slow, not wrong,
+/// and the reason `#476` §9's held-feed work matters more now than it did. Throwing from here is not the
+/// way to opt out: it reaches the hub as <c>Availability.Unavailable</c>, the same answer an unreadable
+/// feed gives, which is a fact about the source rather than about its depth. Return null instead.
+/// </para>
+/// </summary>
+public interface IEpgHorizon
+{
+    Task<EpgHorizon?> HorizonAsync(CancellationToken ct);
 }
 
 /// <summary>

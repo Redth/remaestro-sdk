@@ -232,9 +232,17 @@ public sealed class DriverServiceImpl : Driver.DriverBase
     /// <b>Every .NET guide source can be searched and none of them had to change.</b> The filter is over
     /// exactly what <see cref="IEpgSource.GetEpgAsync"/> already returns, on the same line
     /// <see cref="GetEpg"/> pages and sorts on — so one method here is what all three shipped sources, and
-    /// every driver anybody writes against this SDK, answer <c>SearchEpg</c> with. What that costs is
-    /// written down on <see cref="IEpgSource"/> and it is the thing to read before promising anybody a
-    /// search that reaches next Thursday: the guide this shim holds is the window it was asked for.
+    /// every driver anybody writes against this SDK, answer <c>SearchEpg</c> with.
+    /// </para>
+    /// <para>
+    /// <b>And how far it reaches is the source's to widen, in one interface with one method.</b> A source
+    /// that implements <see cref="IEpgHorizon"/> is asked for its guide over the union of the hub's window
+    /// and its own horizon, so a film next Thursday is found by the same predicate that finds one tonight;
+    /// a source that does not is asked for the window, exactly as before. Three things follow and each is
+    /// load-bearing. The union is a union, so a horizon cannot narrow the grid. The <i>grid</i> is still
+    /// the hub's window — <c>programmes</c> below is filtered to it, because widening the search must not
+    /// widen the answer or paging has bought nothing. And the reply carries the window that was actually
+    /// searched, so "nothing on Thursday" and "Thursday was not looked at" stop being the same bytes.
     /// </para>
     /// <para>
     /// <b>Unsupported rather than UNIMPLEMENTED for a device that is not a guide source</b>, which is the
@@ -261,9 +269,30 @@ public sealed class DriverServiceImpl : Driver.DriverBase
         {
             var from = DateTimeOffset.FromUnixTimeSeconds(request.FromUnix);
             var to = DateTimeOffset.FromUnixTimeSeconds(request.ToUnix);
-            var data = await src.GetEpgAsync(from, to, Token(context));
-
             var query = (request.Query ?? "").Trim();
+
+            // How far this search may look, which is the hub's window widened by whatever the source says
+            // it already holds. `IEpgHorizon` is the whole of the difference between a search that reaches
+            // next Thursday and one that cannot, and a source that does not implement it lands on the two
+            // lines below unchanged.
+            //
+            // **A union, never an intersection.** The grid still has to cover the window the hub asked
+            // about, so a horizon that is narrower — a tuner whose free guide runs out this evening —
+            // must not shorten it. The only thing a horizon can do is add.
+            //
+            // **Not for an empty query**, which the contract says is not a search: it is answered as
+            // `GetEpg` would answer over this window, and pulling a fortnight to hand back one day of it
+            // would be work nobody asked for on the commonest request there is.
+            var searchFrom = from;
+            var searchTo = to;
+            if (query.Length > 0 && device is IEpgHorizon deep
+                && await deep.HorizonAsync(Token(context)) is { } horizon)
+            {
+                if (horizon.From < searchFrom) searchFrom = horizon.From;
+                if (horizon.To > searchTo) searchTo = horizon.To;
+            }
+
+            var data = await src.GetEpgAsync(searchFrom, searchTo, Token(context));
 
             // Which channels have a programme that matched. Gathered before the channel pass because a
             // channel is selected by any of its programmes and there is no ordering between the two —
@@ -308,9 +337,26 @@ public sealed class DriverServiceImpl : Driver.DriverBase
             {
                 Supported = true, Availability = Availability.Answered,
                 TotalChannels = ordered.Count, TotalMatches = hits.Count,
+
+                // What was actually looked at, which is the one thing a whole-guide search had no way to
+                // say. Always set, so silence on the wire means a plugin older than the field rather than
+                // this host declining to answer — and it is the window searched rather than the span of
+                // what was found, because a Thursday with nothing on it was still searched.
+                SearchedFromUnix = searchFrom.ToUnixTimeSeconds(),
+                SearchedToUnix = searchTo.ToUnixTimeSeconds(),
             };
             msg.Channels.AddRange(page.Select(Wire));
-            msg.Programmes.AddRange(data.Programmes.Where(p => onPage.Contains(p.ChannelId)).Select(Wire));
+
+            // **The grid is the hub's window, even though the search was not.** A horizon widens what may
+            // match and must not widen what comes back: `programmes` is this page's channels over the
+            // window that was asked about, exactly as `GetEpg` gives it. Without this line a source
+            // holding a fortnight would answer every keystroke with a fortnight of listings, which is
+            // paging undone by the feature next to it. A channel selected only by a film outside the
+            // window therefore arrives with nothing against it — which is what the contract says happens
+            // and is why `matches` carries its own channel.
+            msg.Programmes.AddRange(data.Programmes
+                .Where(p => onPage.Contains(p.ChannelId) && p.Stop > from && p.Start < to)
+                .Select(Wire));
             msg.Groups.AddRange(EpgChannelOrder.RunsOf(ordered).Select(Wire));
             msg.Matches.AddRange(hits.Take(cap).Select(p => new EpgMatchMessage
             {

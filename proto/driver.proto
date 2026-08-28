@@ -110,6 +110,14 @@ service Driver {
   // That asymmetry is the price of searching the whole guide rather than the open window, and it is paid
   // knowingly: a search bounded to the window would make the second check well-founded, and would also
   // mean "find me the film" could not reach next Thursday.
+  //
+  // **What it cannot check it can at least be told**, and that is all `searched_from_unix`/
+  // `searched_to_unix` on the reply are — see them for the wording. They do not move either bullet above:
+  // a window is not the programme a match was on, so the row check stays unfounded, and a plugin that
+  // overstates its reach is exactly as unverifiable as one that returns a row it invented. What they
+  // remove is the *other* silence, the one no bullet covers: a source that reached only as far as the open
+  // window and a source that reached a fortnight and found nothing beyond it used to send byte-identical
+  // answers.
   rpc SearchEpg (EpgSearchRequest) returns (EpgSearchMessage);
 
   // The apps a device can launch — Netflix, YouTube, a TV's own tuner app. A streamer that knows its
@@ -609,10 +617,12 @@ message EpgSearchRequest {
   // `programmes` against it, and a programme in `matches` may start after `to_unix`. Both are correct
   // answers, and a hub drawing a match must not assume it can find it in the grid it is showing.
   //
-  // **How much guide a plugin holds is the plugin's own business, and the hub cannot tell.** A source
-  // holding a fortnight searches a fortnight; one that has only ever fetched this window searches this
-  // window and is not wrong — it has searched all the guide it has. The .NET host is in the second case
-  // today, deliberately and for a reason written down beside IEpgSource.
+  // **How much guide a plugin holds is the plugin's own business, and the hub cannot tell — so the plugin
+  // says.** A source holding a fortnight searches a fortnight; one that has only ever fetched this window
+  // searches this window and is not wrong, having searched all the guide it has. Both are conformant and
+  // they are not the same answer, which is why `searched_from_unix`/`searched_to_unix` on the reply exist:
+  // a plugin reports the window it looked over, and a plugin that reports nothing is read as having looked
+  // over exactly this one.
   int64 from_unix = 3;
   int64 to_unix = 4;
 
@@ -647,6 +657,30 @@ message EpgSearchMessage {
   // list nobody can tell is short.
   repeated EpgMatchMessage matches = 7;
   int32 total_matches = 8;
+
+  // **How far this search actually looked**, which is the one thing a whole-guide search could not say
+  // until now. A search covers the whole guide the plugin holds, and how much that is varies per plugin
+  // and per moment: an XMLTV file may carry a fortnight, a tuner's free guide barely a day, and a source
+  // that has only ever fetched the open window holds exactly that. All three are conformant. Without
+  // these fields the three are also indistinguishable, so *"nothing on Thursday"* and *"Thursday was not
+  // looked at"* arrive as the same answer — which is `query` being ignored wearing a different hat.
+  //
+  // Report the window you searched over, not the span of what you found: a quiet Thursday with nothing on
+  // it was still searched, and saying otherwise would report an absence of programmes as an absence of
+  // reach.
+  //
+  // **Both 0 means not said, and silence reads as `from_unix`/`to_unix`** — the narrowest honest reading,
+  // and what every plugin written before this field is in fact doing. A hub must never read silence as
+  // "everything", because that is the reading that makes an unsearched Thursday look empty.
+  //
+  // **This is a statement, not a receipt, and it does not widen what the hub can check.** The paragraph on
+  // SearchEpg above still holds in full: the hub cannot tell whether a row you returned actually matches,
+  // and it cannot tell now either, because holding the programme a match was on is what checking needs and
+  // these two numbers are not that programme. A plugin that overstates its reach is in the same position
+  // as one that returns a row it invented — the contract is yours to keep. What they buy is a page that
+  // can say *"your tuner's guide runs 14 hours ahead"* instead of drawing a silence it cannot explain.
+  int64 searched_from_unix = 9;
+  int64 searched_to_unix = 10;
 }
 
 // One hit: a programme whose title matched, and the channel it is on.
