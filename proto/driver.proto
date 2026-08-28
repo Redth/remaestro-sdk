@@ -75,6 +75,43 @@ service Driver {
   // window keeps a multi-day guide from crossing the wire all at once.
   rpc GetEpg (EpgRequest) returns (EpgMessage);
 
+  // Search that guide: the channels a query selects, and the programmes whose titles matched.
+  //
+  // **Its own rpc rather than a `query` field on GetEpg, and that is the whole of the design.** `offset`,
+  // `limit` and `total_channels` are *pagination* — a driver that ignores one of those hands the hub an
+  // answer it can either detect or redo for itself, so they ride an existing call unguarded. A query is
+  // *selection*: a driver that ignores it answers a different question in a perfectly well-formed way, and
+  // there is no page of channels the hub can look at and know. So the "no" is moved to the one place it
+  // cannot be got wrong — a driver that has not implemented an rpc has not implemented it, and answers
+  // UNIMPLEMENTED under rule 3 above. The hub reads that the way it reads GetRemote's: this source cannot
+  // be searched, said beside the results rather than treated as a fault, and the other sources are still
+  // searched.
+  //
+  // **There is no hub-side fallback, and that is a commitment rather than an omission.** The hub does not
+  // page your whole line-up and filter it for you if you answer UNIMPLEMENTED. It could do that for the
+  // channel half; it could not do it for the programme half, which needs every programme of every channel
+  // over the window — 42.8 MB for a 27,600-channel account, per query, on a Raspberry Pi. Half a feature
+  // at that price is not a feature, and building it would make this rpc something the hub does not rely
+  // on, which is the one kind of contract addition this file will not carry.
+  //
+  // **What the hub can tell about your answer, and what it cannot.** Worth stating, because a plugin
+  // author is entitled to know which half of this rests on them:
+  //
+  //   - It can tell that you did not filter at all. It already knows how tall your unfiltered line-up is,
+  //     from the guide it has been drawing, and a `total_channels` under a query that equals that height
+  //     is a source answering the wrong question. The only false positive is a query that genuinely
+  //     selects everything, so acting on it costs nothing — and the action is to drop the source from the
+  //     *search*, never from the guide.
+  //   - **It cannot tell whether a row you returned actually matches.** Checking that means holding the
+  //     programme the match was on, and a search covers the whole guide *you* hold: any window the hub has
+  //     is a subset of it, so a channel it can find no reason for may have matched on a programme the hub
+  //     has never seen. The predicate below is therefore yours to keep, and nothing enforces it.
+  //
+  // That asymmetry is the price of searching the whole guide rather than the open window, and it is paid
+  // knowingly: a search bounded to the window would make the second check well-founded, and would also
+  // mean "find me the film" could not reach next Thursday.
+  rpc SearchEpg (EpgSearchRequest) returns (EpgSearchMessage);
+
   // The apps a device can launch — Netflix, YouTube, a TV's own tuner app. A streamer that knows its
   // installed set (Apple TV, Roku, an LG webOS TV) answers live, artwork and all; a device that can't be
   // asked reports unsupported and the hub falls back to whatever apps the driver declares statically.
@@ -489,6 +526,29 @@ message EpgMessage {
   //
   // `int32` to match `EpgRequest.offset` and `limit`. An IPTV account's line-up is 5,000 to 40,000.
   int32 total_channels = 5;
+
+  // **6 and 7 are deliberately skipped.** `docs/plugins/design-guide-storage.md` proposes
+  // `fetched_at_unix` at 6 and `docs/plugins/design-guide-sections.md` proposes `stale` at 7; both are
+  // designed and neither is built. They are not `reserved`, because nothing has ever been sent at either
+  // — this comment is the whole of the claim, and rule 1 is what makes taking one of them later safe.
+
+  // Where each group begins in this answer's *selection*, and how long it is — so a grid can head and
+  // size its sections without having read a line-up it has asked for one page of.
+  //
+  // The ordinals are into the selection `total_channels` counts, not into `channels`: a page is what fits
+  // in one message, and where the sections fall is a fact about the whole selection.
+  //
+  // **Empty means "not said"**, which is what a driver older than this field sends and what a source that
+  // will not compute it sends. The hub treats the two the same and pages to the end, bounded, reading the
+  // runs off `group` itself. Slow, not wrong — the rule `total_channels` above is written to.
+  repeated EpgGroupMessage groups = 8;
+}
+
+// One run of channels sharing a group label, as a range in the answer it arrived with.
+message EpgGroupMessage {
+  string label = 1;   // what a person reads at the top of the section; an EpgChannelMessage.group verbatim
+  int32 first = 2;    // ordinal of this group's first channel in the selection
+  int32 count = 3;    // how many channels are in it
 }
 
 message EpgChannelMessage {
@@ -497,6 +557,24 @@ message EpgChannelMessage {
   string logo = 3;             // channel artwork URL, optional
   string number = 4;           // display number, e.g. "3.1", optional
   string stream_url = 5;       // what to play to watch it, optional — the guide's Watch action uses it
+
+  // Section heading this channel belongs under — "Sports", "Movies". Blank means ungrouped, and is the
+  // same field with the same meaning as LibraryNodeMessage.group.
+  //
+  // **A source that sets this MUST keep each group contiguous in its own order** — all of one group, then
+  // all of the next. `offset` addresses that order and a section is addressed as a range inside it, so a
+  // label that reappears after a different one makes the range meaningless. The hub can see that happen,
+  // and what it does about it is treat the source as ungrouped: one heading fewer, never a row in the
+  // wrong place. It is not an error and you are not disconnected for it.
+  //
+  // **A source that groups nothing sends nothing here**, and is under exactly the ordering obligation it
+  // was under before this field existed — which is none. This is the guide contract's only claim on how a
+  // driver orders its line-up, and it is conditional on a field the driver itself chooses to set.
+  //
+  // **One group per channel.** A line-up that repeats a channel under every category it belongs to has a
+  // `total_channels` with duplicates in it, and a grid whose row count is not a count of anything cannot
+  // be sized or scrolled. Where an upstream says a channel is in several, pick one.
+  string group = 6;
 }
 
 message EpgProgrammeMessage {
@@ -510,6 +588,78 @@ message EpgProgrammeMessage {
   string image = 8;            // programme artwork URL, optional
   string episode = 9;          // "S3E4" or similar, optional
   bool is_new = 10;            // first-run rather than a repeat
+}
+
+message EpgSearchRequest {
+  string device_id = 1;
+
+  // What to look for: a **case-insensitive substring**, with no ranking and no cleverness. It matches a
+  // channel's name or its number, and a programme's title. Nothing else — not a synopsis, not a genre —
+  // because a promise about matching is one every plugin in every language has to keep identically, and
+  // "contains, ignoring case" is the largest promise that can be kept that way.
+  //
+  // An empty query is not a search. Answer it as you would answer GetEpg over the same window.
+  string query = 2;
+
+  // The window the **returned grid** covers, exactly as EpgRequest's does: `programmes` below carries the
+  // selected channels' listings over this window and no others, for the same reason paging exists at all.
+  //
+  // **It does not bound what matches.** A search covers the whole guide this plugin holds. So a channel
+  // may be selected by a programme outside this window and arrive in `channels` with nothing in
+  // `programmes` against it, and a programme in `matches` may start after `to_unix`. Both are correct
+  // answers, and a hub drawing a match must not assume it can find it in the grid it is showing.
+  //
+  // **How much guide a plugin holds is the plugin's own business, and the hub cannot tell.** A source
+  // holding a fortnight searches a fortnight; one that has only ever fetched this window searches this
+  // window and is not wrong — it has searched all the guide it has. The .NET host is in the second case
+  // today, deliberately and for a reason written down beside IEpgSource.
+  int64 from_unix = 3;
+  int64 to_unix = 4;
+
+  // A page of `channels`, meaning exactly what it means on EpgRequest: `offset` skips, `limit` caps,
+  // **`limit` 0 means all of them**. It pages the *selection* — the channels this query picked — and
+  // `programmes` follows the page, for the reason EpgRequest.offset explains at length.
+  int32 offset = 5;
+  int32 limit = 6;
+
+  // Caps `matches`; **0 means the driver chooses**. The hub sends a number rather than leaving it open,
+  // because the receiver is the party that knows what it can take: 200 denormalised matches is about
+  // 96 KB, comfortably inside the 4,194,304 a stock gRPC channel receives.
+  int32 match_limit = 7;
+}
+
+message EpgSearchMessage {
+  bool supported = 1;              // false = this device isn't a guide source
+  Availability availability = 2;   // which kind of "no" — see Availability
+
+  // The narrowed grid: EpgMessage's channels/programmes/total_channels/groups contract exactly, about the
+  // selection the query defines rather than about the whole line-up. `total_channels` is how tall the
+  // selection is — the definition it already had, which is why it did not have to be narrowed for this —
+  // and `groups` describes that selection, so a category the query found nothing in has no entry and no
+  // heading.
+  repeated EpgChannelMessage channels = 3;
+  repeated EpgProgrammeMessage programmes = 4;
+  int32 total_channels = 5;
+  repeated EpgGroupMessage groups = 6;
+
+  // The result list: programmes whose title matched, capped by `match_limit`. `total_matches` is how many
+  // there were before the cap, so "showing 200 of 1,412" is sayable — a cap with no count behind it is a
+  // list nobody can tell is short.
+  repeated EpgMatchMessage matches = 7;
+  int32 total_matches = 8;
+}
+
+// One hit: a programme whose title matched, and the channel it is on.
+//
+// **Denormalised on purpose.** The list draws "Casablanca — BBC Two, 21:00", so it needs the channel's
+// name, and EpgProgrammeMessage carries only `channel_id` — naming a channel that is very often not in
+// `channels` above, because that is one page of a selection and the match may be a thousand rows further
+// down it. A channel with three matches is therefore sent three times, at about 152 bytes each. The two
+// alternatives were requiring every matched channel into the page, which breaks paging, and a second
+// deduplicated channel list, which is a cross-reference a plugin can get wrong and the hub must resolve.
+message EpgMatchMessage {
+  EpgChannelMessage channel = 1;
+  EpgProgrammeMessage programme = 2;
 }
 
 // ---- Apps ----

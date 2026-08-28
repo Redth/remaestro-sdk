@@ -118,7 +118,7 @@ A repeated string. The vocabulary is exactly the set of optional behaviours the 
 | String | The driver's devices answer |
 |---|---|
 | `inputs` | `ListInputs` with a real source list |
-| `epg` | `GetEpg` — supersedes `supports_epg` |
+| `epg` | `GetEpg` — supersedes `supports_epg`. **Not `SearchEpg`**, which has no capability string at all: its "no" is `UNIMPLEMENTED`, so declaring `epg` neither promises nor withholds a searchable guide |
 | `apps` | `ListApps` |
 | `device-remotes` | `GetRemote` — supersedes `supports_device_remotes` |
 | `bridge` | `ListBridgedDevices` |

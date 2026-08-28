@@ -193,18 +193,18 @@ public sealed class DriverServiceImpl : Driver.DriverBase
             {
                 Supported = true, Availability = Availability.Answered, TotalChannels = ordered.Count,
             };
-            msg.Channels.AddRange(page.Select(c => new EpgChannelMessage
-            {
-                Id = c.Id, Name = c.Name, Logo = c.Logo ?? "", Number = c.Number ?? "", StreamUrl = c.StreamUrl ?? "",
-            }));
-            msg.Programmes.AddRange(programmes.Select(p => new EpgProgrammeMessage
-            {
-                ChannelId = p.ChannelId,
-                StartUnix = p.Start.ToUnixTimeSeconds(),
-                StopUnix = p.Stop.ToUnixTimeSeconds(),
-                Title = p.Title, Subtitle = p.Subtitle ?? "", Description = p.Description ?? "",
-                Category = p.Category ?? "", Image = p.Image ?? "", Episode = p.Episode ?? "", IsNew = p.IsNew,
-            }));
+            msg.Channels.AddRange(page.Select(Wire));
+            msg.Programmes.AddRange(programmes.Select(Wire));
+
+            // Where the sections fall, over the whole line-up rather than over the page — a grid sizes and
+            // heads its sections from one answer, the same way it sizes its scrollbar from
+            // `total_channels`, and a page is only what fitted in one message.
+            //
+            // Free, and empty for every source in this fleet today: nothing here sets a group yet, and a
+            // line-up with no groups in it has nothing to say. `EpgChannelOrder.Sorted` above is what makes
+            // this legal at all — the contract requires a grouped line-up to be group-contiguous, and one
+            // sort key on that line is how every .NET driver gets that for nothing.
+            msg.Groups.AddRange(EpgChannelOrder.RunsOf(ordered).Select(Wire));
             return msg;
         }
         catch
@@ -215,6 +215,137 @@ public sealed class DriverServiceImpl : Driver.DriverBase
             return new EpgMessage { Supported = false, Availability = Availability.Unavailable };
         }
     }
+
+    /// <summary>
+    /// How many matches this host sends when the hub does not say. <c>match_limit</c> 0 means "the driver
+    /// chooses" and this is the choice: a screen or two of results, and <c>total_matches</c> beside them so
+    /// a page can say "showing 200 of 1,412". At about 480 bytes a denormalised match that is ~96 KB, well
+    /// inside the 4,194,304 a stock gRPC channel receives.
+    /// </summary>
+    const int DefaultMatchLimit = 200;
+
+    /// <summary>
+    /// The searched guide, when the device is a source (<see cref="IEpgSource"/>) — the channels the query
+    /// selects, and the programmes whose titles matched.
+    ///
+    /// <para>
+    /// <b>Every .NET guide source can be searched and none of them had to change.</b> The filter is over
+    /// exactly what <see cref="IEpgSource.GetEpgAsync"/> already returns, on the same line
+    /// <see cref="GetEpg"/> pages and sorts on — so one method here is what all three shipped sources, and
+    /// every driver anybody writes against this SDK, answer <c>SearchEpg</c> with. What that costs is
+    /// written down on <see cref="IEpgSource"/> and it is the thing to read before promising anybody a
+    /// search that reaches next Thursday: the guide this shim holds is the window it was asked for.
+    /// </para>
+    /// <para>
+    /// <b>Unsupported rather than UNIMPLEMENTED for a device that is not a guide source</b>, which is the
+    /// same answer <see cref="GetEpg"/> gives and is deliberate. UNIMPLEMENTED on this rpc means "this
+    /// build of this plugin cannot search", and a driver hosted here can always search whatever guide it
+    /// has — so saying it about a lamp would tell the hub something false about the plugin. The status the
+    /// contract's "no" travels on stays reserved for a host that genuinely does not have the method, which
+    /// is a plugin older than this rpc or one written in another language.
+    /// </para>
+    /// <para>
+    /// <b>The two halves are one pass over one guide, and they are not the same set.</b> `channels` is the
+    /// selection — a channel whose own name matched is in it even with nothing on it, and a channel is in
+    /// it if any of its programmes matched. `matches` is programmes, so a channel with three matching
+    /// programmes appears three times there and once in the grid.
+    /// </para>
+    /// </summary>
+    public override async Task<EpgSearchMessage> SearchEpg(EpgSearchRequest request, ServerCallContext context)
+    {
+        if (!_devices.TryGetValue(request.DeviceId, out var device))
+            return new EpgSearchMessage { Supported = false, Availability = Availability.UnknownDevice };
+        if (device is not IEpgSource src)
+            return new EpgSearchMessage { Supported = false, Availability = Availability.Unsupported };
+        try
+        {
+            var from = DateTimeOffset.FromUnixTimeSeconds(request.FromUnix);
+            var to = DateTimeOffset.FromUnixTimeSeconds(request.ToUnix);
+            var data = await src.GetEpgAsync(from, to, Token(context));
+
+            var query = (request.Query ?? "").Trim();
+
+            // Which channels have a programme that matched. Gathered before the channel pass because a
+            // channel is selected by any of its programmes and there is no ordering between the two —
+            // one walk of the programmes answers it for the whole line-up.
+            var byProgramme = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var p in data.Programmes)
+                if (EpgSearch.Hits(p.Title, query)) byProgramme.Add(p.ChannelId);
+
+            // An empty query is not a search: `Hits` is false for it rather than true of everything, so
+            // `Selects` and `byProgramme` are both empty and this is the branch that keeps the whole
+            // line-up. `EpgSearch` says why that is the reading rather than the special case it looks like.
+            var selected = query.Length == 0
+                ? data.Channels
+                : [.. data.Channels.Where(c => EpgSearch.Selects(c, query) || byProgramme.Contains(c.Id))];
+
+            var ordered = EpgChannelOrder.Sorted(selected);
+
+            var channels = (IEnumerable<EpgChannel>)ordered;
+            if (request.Offset > 0) channels = channels.Skip(request.Offset);
+            if (request.Limit > 0) channels = channels.Take(request.Limit);
+            var page = channels.ToList();
+
+            // The grid's programmes follow the page, exactly as GetEpg's do and for the same reason: a page
+            // of channels carrying the whole guide has paged nothing.
+            var onPage = page.Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+
+            // The result list. Chronological, because a person scanning for a film reads it as a schedule
+            // — and totally ordered, because a cap applied to an unstable order shows a different 200 on
+            // every keystroke. Programmes of channels that were not selected cannot appear here: a title
+            // match is one of the two things that selects a channel, so the set is already a subset.
+            var inSelection = ordered.ToDictionary(c => c.Id, StringComparer.Ordinal);
+            var hits = data.Programmes
+                .Where(p => EpgSearch.Hits(p.Title, query) && inSelection.ContainsKey(p.ChannelId))
+                .OrderBy(p => p.Start)
+                .ThenBy(p => p.ChannelId, StringComparer.Ordinal)
+                .ThenBy(p => p.Title, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var cap = request.MatchLimit > 0 ? request.MatchLimit : DefaultMatchLimit;
+
+            var msg = new EpgSearchMessage
+            {
+                Supported = true, Availability = Availability.Answered,
+                TotalChannels = ordered.Count, TotalMatches = hits.Count,
+            };
+            msg.Channels.AddRange(page.Select(Wire));
+            msg.Programmes.AddRange(data.Programmes.Where(p => onPage.Contains(p.ChannelId)).Select(Wire));
+            msg.Groups.AddRange(EpgChannelOrder.RunsOf(ordered).Select(Wire));
+            msg.Matches.AddRange(hits.Take(cap).Select(p => new EpgMatchMessage
+            {
+                Channel = Wire(inSelection[p.ChannelId]),
+                Programme = Wire(p),
+            }));
+            return msg;
+        }
+        catch
+        {
+            // The same "no" GetEpg gives a feed it could not read, for the same reason: a source that could
+            // not be reached is not a source that cannot be searched, and only one of those is a fact about
+            // the plugin worth remembering.
+            return new EpgSearchMessage { Supported = false, Availability = Availability.Unavailable };
+        }
+    }
+
+    // One projection each, used by both guide rpcs. Two copies of these drifted apart once already on the
+    // navigation side, and there is nothing about a channel that differs between a grid and a result list.
+    static EpgChannelMessage Wire(EpgChannel c) => new()
+    {
+        Id = c.Id, Name = c.Name, Logo = c.Logo ?? "", Number = c.Number ?? "",
+        StreamUrl = c.StreamUrl ?? "", Group = c.Group ?? "",
+    };
+
+    static EpgProgrammeMessage Wire(EpgProgramme p) => new()
+    {
+        ChannelId = p.ChannelId,
+        StartUnix = p.Start.ToUnixTimeSeconds(),
+        StopUnix = p.Stop.ToUnixTimeSeconds(),
+        Title = p.Title, Subtitle = p.Subtitle ?? "", Description = p.Description ?? "",
+        Category = p.Category ?? "", Image = p.Image ?? "", Episode = p.Episode ?? "", IsNew = p.IsNew,
+    };
+
+    static EpgGroupMessage Wire(EpgGroupRun r) => new() { Label = r.Label, First = r.First, Count = r.Count };
 
     /// <summary>The device's live app list, when it knows one (<see cref="IAppListDevice"/>).</summary>
     public override async Task<AppListMessage> ListApps(DeviceRef request, ServerCallContext context)
