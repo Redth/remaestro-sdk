@@ -473,6 +473,22 @@ message EpgMessage {
   repeated EpgChannelMessage channels = 2;
   repeated EpgProgrammeMessage programmes = 3;
   Availability availability = 4;   // which kind of "no" — see Availability
+
+  // How many channels this request's criteria select, of which `channels` is one page. With no filter
+  // that is the whole line-up, and it is what a grid needs to size a scrollbar it has only drawn forty
+  // rows of.
+  //
+  // **0 means "not said"**, which is what a driver older than this field sends and what a source that
+  // genuinely cannot count sends. The hub must treat those the same and it does: it pages until a short
+  // page and counts for itself. So a plugin that never sets this is slow rather than wrong, which is the
+  // rule this whole page of comments is written to.
+  //
+  // Say the size of the *selection* rather than of the line-up. With no filtering the two are the same;
+  // when one arrives, a filtered grid is sizeable by the same arithmetic, and a field defined as "the
+  // line-up" could not be narrowed to mean that later without breaking rule 4.
+  //
+  // `int32` to match `EpgRequest.offset` and `limit`. An IPTV account's line-up is 5,000 to 40,000.
+  int32 total_channels = 5;
 }
 
 message EpgChannelMessage {

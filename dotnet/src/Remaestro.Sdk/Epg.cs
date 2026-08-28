@@ -64,3 +64,60 @@ public interface IEpgSource
 {
     Task<EpgData> GetEpgAsync(DateTimeOffset from, DateTimeOffset to, CancellationToken ct);
 }
+
+/// <summary>
+/// What order a guide source's channels come out in, and therefore what <c>EpgRequest.offset</c> addresses.
+///
+/// <para>
+/// <b>Why this is in the SDK rather than in the hub.</b> The grid is the concatenation of each source's own
+/// line-up — the hub never compares a channel from one source against a channel from another, which is what
+/// makes a range query over several sources arithmetic rather than a merge. So a section's order is the
+/// source's, the hub does not sort and cannot check, and the only place a shipped driver can be given the
+/// order a person expects for free is the host shim every one of them goes through.
+/// <c>docs/plugins/design-guide-sections.md</c> §5 is the argument.
+/// </para>
+///
+/// <para>
+/// <b>A channel number is not a decimal.</b> "3.1" is sub-channel 1 of channel 3, so the parts are compared
+/// as two integers rather than folded into one <c>double</c> by <c>major + minor / 1000.0</c>. That fold is
+/// exact for minors under 1000 and wrong above it — "3.1000" comes out as <c>4.0</c>, <b>equal to channel
+/// 4</b> — and widening the divisor moves the cliff rather than removing it. Three tails, ordinal rather
+/// than sentinel: a number, a number that will not parse, no number at all. Sentinels near
+/// <c>double.MaxValue</c> converge, because the ULP up there is about 2·10²⁹².
+/// </para>
+///
+/// <para>
+/// The parse is deliberately small: split on the first '.' or '-', parse the whole leading part (so "12A"
+/// does not read as 12), a missing or unreadable minor is 0, anything past the second part ignored.
+/// </para>
+/// </summary>
+public static class EpgChannelOrder
+{
+    const int Numbered = 0, Unreadable = 1, Numberless = 2;
+
+    /// <summary>Where a channel number sorts. Public so a driver that pages for itself can agree with the shim.</summary>
+    public static (int Bucket, int Major, int Minor) Of(string? number)
+    {
+        if (string.IsNullOrWhiteSpace(number)) return (Numberless, 0, 0);
+        var parts = number.Split('.', '-');
+        if (!int.TryParse(parts[0], out var major)) return (Unreadable, 0, 0);
+        var minor = parts.Length > 1 && int.TryParse(parts[1], out var m) ? m : 0;
+        return (Numbered, major, minor);
+    }
+
+    /// <summary>
+    /// One source's line-up in channel-number order, then by name, then by id.
+    /// <para>
+    /// <b>Total, and that is the requirement rather than a nicety.</b> <c>offset</c> has to mean the same
+    /// thing on two consecutive calls or a paged grid repeats rows and drops others, so any tie left for
+    /// <c>OrderBy</c>'s stability to settle is a tie settled by whatever order the upstream happened to
+    /// return this time. The id is unique within a source by construction — programmes reference it — so
+    /// the three keys together cannot tie.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<EpgChannel> Sorted(IReadOnlyList<EpgChannel> channels)
+        => [.. channels
+            .OrderBy(c => Of(c.Number))
+            .ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(c => c.Id, StringComparer.Ordinal)];
+}

@@ -159,7 +159,21 @@ public sealed class DriverServiceImpl : Driver.DriverBase
             // **Filtering the programmes to the page is not tidiness, it is the point.** Sending the whole
             // guide alongside a page of channels would leave the answer exactly as big as it was, and the
             // programmes are the larger half on a feed with synopses in it.
-            var channels = (IEnumerable<EpgChannel>)data.Channels;
+            //
+            // **And the order the page is cut out of is settled here too**, which is the other thing one
+            // line on this method buys every driver at once. `offset` addresses "the source's own order",
+            // so what that order *is* decides which rows a hub draws at row 500 — and no guide source in
+            // this fleet sorts: each projects its upstream's order straight through, an XMLTV document's
+            // order or whatever an Xtream panel happened to return. Sorting by channel number here makes
+            // every .NET driver ship the order a person expects, with no change to any of them.
+            //
+            // A plugin in another language that does not sort is *self-consistent* rather than wrong: its
+            // section is in its own order, `offset` addresses it exactly, and no row is duplicated or
+            // missing. See `EpgChannelOrder` for what "channel number" means, and note that the hub does
+            // not sort and cannot check.
+            var ordered = EpgChannelOrder.Sorted(data.Channels);
+
+            var channels = (IEnumerable<EpgChannel>)ordered;
             if (request.Offset > 0) channels = channels.Skip(request.Offset);
             if (request.Limit > 0) channels = channels.Take(request.Limit);
             var page = channels.ToList();
@@ -171,7 +185,14 @@ public sealed class DriverServiceImpl : Driver.DriverBase
                 programmes = programmes.Where(p => ids.Contains(p.ChannelId));
             }
 
-            var msg = new EpgMessage { Supported = true, Availability = Availability.Answered };
+            // How tall the whole selection is, so a hub drawing forty rows of it can size a scrollbar
+            // without asking for the other twenty-seven thousand. It is the count of everything this
+            // device offers, not of the page — `total_channels` in the proto says why, and says what a
+            // driver that leaves it at 0 costs itself.
+            var msg = new EpgMessage
+            {
+                Supported = true, Availability = Availability.Answered, TotalChannels = ordered.Count,
+            };
             msg.Channels.AddRange(page.Select(c => new EpgChannelMessage
             {
                 Id = c.Id, Name = c.Name, Logo = c.Logo ?? "", Number = c.Number ?? "", StreamUrl = c.StreamUrl ?? "",
