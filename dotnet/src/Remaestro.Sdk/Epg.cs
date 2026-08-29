@@ -280,9 +280,13 @@ public static class EpgChannelOrder
     /// Where each group begins in an already-<see cref="Sorted"/> line-up, and how long it is —
     /// <c>EpgMessage.groups</c>, computed once over the whole selection rather than per page.
     /// <para>
-    /// <b>Empty when nothing is grouped</b>, which is the wire's "not said" and is the honest answer for
-    /// every source in this fleet today. A single run covering everything would be a heading over the
-    /// whole grid, which tells a person nothing they could not see, and the hub would have to unpick it.
+    /// <b>Empty when nothing is grouped</b>, which is the wire's "not said". A single run covering
+    /// everything would be a heading over the whole grid, which tells a person nothing they could not see,
+    /// and the hub would have to unpick it.
+    /// <br>That sentence ended "and is the honest answer for every source in this fleet today" until
+    /// `#492`, which is the day an Xtream account began sending the panel's categories. It is still the
+    /// answer for a source with nothing grouped, which is what the words now say and what the code has
+    /// always done — the count was the part that could go stale.
     /// </para>
     /// </summary>
     public static IReadOnlyList<EpgGroupRun> RunsOf(IReadOnlyList<EpgChannel> ordered)

@@ -200,10 +200,15 @@ public sealed class DriverServiceImpl : Driver.DriverBase
             // heads its sections from one answer, the same way it sizes its scrollbar from
             // `total_channels`, and a page is only what fitted in one message.
             //
-            // Free, and empty for every source in this fleet today: nothing here sets a group yet, and a
-            // line-up with no groups in it has nothing to say. `EpgChannelOrder.Sorted` above is what makes
-            // this legal at all — the contract requires a grouped line-up to be group-contiguous, and one
-            // sort key on that line is how every .NET driver gets that for nothing.
+            // Free, and empty for a line-up with no groups in it, which has nothing to say.
+            // `EpgChannelOrder.Sorted` above is what makes this legal at all — the contract requires a
+            // grouped line-up to be group-contiguous, and one sort key on that line is how every .NET
+            // driver gets that for nothing.
+            //
+            // This said "empty for every source in this fleet today: nothing here sets a group yet" until
+            // `#492`, which gave the Xtream driver the panel's own `get_live_categories`. All that driver
+            // does is set a label per channel: the order, the contiguity and these ranges are this line
+            // and the one above it, which is the claim that comment was making and is now demonstrated.
             msg.Groups.AddRange(EpgChannelOrder.RunsOf(ordered).Select(Wire));
             return msg;
         }
